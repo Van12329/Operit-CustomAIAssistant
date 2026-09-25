@@ -1227,16 +1227,24 @@ Java_com_ai_assistance_llama_LlamaNative_nativeGenerateStream(JNIEnv * env, jcla
     );
 
     int32_t n_past = 0;
-
-    // Evaluate prompt
-    llama_batch batch = llama_batch_get_one(promptTokens.data(), static_cast<int32_t>(promptTokens.size()));
-    // llama_batch_get_one() may leave batch.logits == nullptr (default behavior is: only last token outputs logits)
-    // so never write to it unless it's allocated.
-    if (batch.logits != nullptr && batch.n_tokens > 0) {
-        batch.logits[batch.n_tokens - 1] = 1;
-    }
+    int32_t ret = 0;
+    llama_batch batch{};
 
     if (llama_model_has_encoder(session->model)) {
+        // Encoder models still require their prompt to fit in one encoder batch.
+        // Keep the existing behavior, but fail cleanly instead of triggering
+        // llama.cpp's n_tokens <= n_batch assertion.
+        const int32_t batchLimit = std::max<int32_t>(1, static_cast<int32_t>(llama_n_batch(session->ctx)));
+        if (static_cast<int32_t>(promptTokens.size()) > batchLimit) {
+            LOGE(
+                "Encoder prompt exceeds n_batch: prompt_tokens=%zu n_batch=%d",
+                promptTokens.size(),
+                batchLimit
+            );
+            return JNI_FALSE;
+        }
+
+        batch = llama_batch_get_one(promptTokens.data(), static_cast<int32_t>(promptTokens.size()));
         if (llama_encode(session->ctx, batch) != 0) {
             LOGE("llama_encode failed");
             return JNI_FALSE;
@@ -1248,26 +1256,66 @@ Java_com_ai_assistance_llama_LlamaNative_nativeGenerateStream(JNIEnv * env, jcla
         }
 
         batch = llama_batch_get_one(&decoder_start_token_id, 1);
-        if (batch.logits != nullptr) {
-            batch.logits[0] = 1;
+        ret = llama_decode(session->ctx, batch);
+        if (ret != 0 && ret != 1) {
+            // 1 is a warning; 2 is aborted
+            if (ret == 2) {
+                LOGI("decode aborted (decoder start)");
+            } else {
+                LOGE("llama_decode failed for decoder start ret=%d", ret);
+            }
+            return JNI_FALSE;
         }
-    }
 
-    int32_t ret = llama_decode(session->ctx, batch);
-    if (ret != 0 && ret != 1) {
-        // 1 is a warning; 2 is aborted
-        if (ret == 2) {
-            LOGI("decode aborted (prompt)");
-        } else {
-            LOGE("llama_decode failed for prompt ret=%d", ret);
+        n_past = 1;
+    } else {
+        // llama.cpp requires every llama_decode() input batch to satisfy
+        // n_tokens <= n_batch. Real Operit prompts can easily exceed n_batch
+        // (for example, 1719 prompt tokens with n_batch=512), which previously
+        // hit a GGML_ASSERT and aborted the entire Android process.
+        //
+        // Feed decoder-only prompts in n_batch-sized chunks. With pos == nullptr,
+        // llama.cpp derives the next positions from the existing KV cache, so
+        // consecutive llama_batch_get_one() calls continue the same sequence.
+        const int32_t batchLimit = std::max<int32_t>(1, static_cast<int32_t>(llama_n_batch(session->ctx)));
+        size_t offset = 0;
+
+        while (offset < promptTokens.size()) {
+            const size_t remaining = promptTokens.size() - offset;
+            const int32_t chunkSize = static_cast<int32_t>(
+                std::min<size_t>(remaining, static_cast<size_t>(batchLimit))
+            );
+
+            LOGI(
+                "Prefill decode chunk: offset=%zu chunk_tokens=%d total_tokens=%zu n_batch=%d",
+                offset,
+                chunkSize,
+                promptTokens.size(),
+                batchLimit
+            );
+
+            batch = llama_batch_get_one(promptTokens.data() + offset, chunkSize);
+            ret = llama_decode(session->ctx, batch);
+            if (ret != 0 && ret != 1) {
+                // 1 is a warning; 2 is aborted
+                if (ret == 2) {
+                    LOGI("decode aborted (prompt chunk)");
+                } else {
+                    LOGE(
+                        "llama_decode failed for prompt chunk ret=%d offset=%zu chunk_tokens=%d",
+                        ret,
+                        offset,
+                        chunkSize
+                    );
+                }
+                return JNI_FALSE;
+            }
+
+            offset += static_cast<size_t>(chunkSize);
         }
-        return JNI_FALSE;
-    }
 
-    // n_past for subsequent single-token decoding
-    n_past = llama_model_has_encoder(session->model)
-        ? 1
-        : static_cast<int32_t>(promptTokens.size());
+        n_past = static_cast<int32_t>(promptTokens.size());
+    }
 
     prefillToolCallGenerationPrompt(session);
 
