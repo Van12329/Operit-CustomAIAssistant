@@ -749,7 +749,7 @@ public final class AndroidSttBridgeHelper {
             text = text.substring(6).trim();
         }
 
-        if (text.equals("на этом все")) {
+        if (text.equals("вернись в кристал")) {
             return LocalCommand.CLOSE;
         }
 
