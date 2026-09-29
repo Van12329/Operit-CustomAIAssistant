@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.rem.android_stt_a1",
+  "version": "0.1.0",
+  "api_version": "1.0.0",
+  "main": "dist/main.js",
+  "display_name": {"en": "Rem Android STT A1", "zh": "Rem Android STT A1"},
+  "description": {"en": "Hands-free Russian Android on-device STT probe using a bundled main-thread DEX helper.", "zh": "Android STT A1"},
+  "enabled_by_default": true,
+  "subpackages": [{"id": "rem_android_stt_a1", "entry": "dist/packages/rem_android_stt_a1.js"}],
+  "resources": [{"key": "android_stt_a1_helper", "path": "resources/android-stt-a1-helper.dex", "mime": "application/vnd.android.dex"}]
+}
