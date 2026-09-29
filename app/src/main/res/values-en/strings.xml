@@ -2771,6 +2771,7 @@
     
     <!-- STT Service Types -->
     <string name="speech_services_stt_type_sherpa">Sherpa NCNN (Local)</string>
+    <string name="speech_services_stt_type_vosk_ru">Vosk Russian (Offline)</string>
     <string name="speech_services_stt_type_sherpa_mnn">Sherpa MNN (Local, with VAD)</string>
     <string name="speech_services_stt_type_openai">OpenAI STT (Remote)</string>
     <string name="speech_services_stt_type_deepgram">Deepgram STT (Remote)</string>
