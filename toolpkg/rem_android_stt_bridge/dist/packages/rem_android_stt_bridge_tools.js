@@ -1,10 +1,10 @@
 /* METADATA
 {
   "name": "rem_android_stt_bridge_tools",
-  "display_name": {"en": "Rem Voice Session Bridge", "zh": "Rem Voice Session Bridge"},
+  "display_name": {"en": "Rem Global Android STT Bridge", "zh": "Rem Global Android STT Bridge"},
   "description": {
     "en": "Status and control tools for the global Android SpeechRecognizer bridge (wake + manual fullscreen, RU/ES).",
-    "zh": "Russian Android STT bridge controls."
+    "zh": "Global Android STT bridge controls for RU/ES."
   },
   "enabledByDefault": true,
   "category": "System",
@@ -35,7 +35,7 @@
     {
       "name": "android_stt_bridge_set_avatar_ball",
       "description": {
-        "en": "Enable or disable the animated avatar-ball mode while keeping Russian Android STT active.",
+        "en": "Enable or disable the animated avatar-ball mode for WakeUpWord sessions while keeping Android STT active.",
         "zh": "Enable or disable animated avatar-ball mode."
       },
       "parameters": [
@@ -80,8 +80,8 @@
     {
       "name": "android_stt_bridge_probe",
       "description": {
-        "en": "Ask the bridge to probe whether a wake-launched floating voice session is already open and attach if possible.",
-        "zh": "Probe current wake-launched floating session."
+        "en": "Probe the current floating fullscreen voice session and attach as WAKE or MANUAL when eligible.",
+        "zh": "Probe current eligible floating voice session."
       },
       "parameters": []
     }
