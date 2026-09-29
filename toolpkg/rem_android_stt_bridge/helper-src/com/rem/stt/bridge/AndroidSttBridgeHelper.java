@@ -749,25 +749,15 @@ public final class AndroidSttBridgeHelper {
             text = text.substring(6).trim();
         }
 
-        if (text.equals("закройся") ||
-            text.equals("закрой панель") ||
-            text.equals("заверши разговор") ||
-            text.equals("закончи разговор")) {
+        if (text.equals("на этом все")) {
             return LocalCommand.CLOSE;
         }
 
-        if (text.equals("свернись") ||
-            text.equals("сверни панель") ||
-            text.equals("скрой панель") ||
-            text.equals("в шар") ||
-            text.equals("перейди в шар")) {
+        if (text.equals("сверни панель")) {
             return LocalCommand.COLLAPSE;
         }
 
-        if (text.equals("развернись") ||
-            text.equals("покажись") ||
-            text.equals("покажи панель") ||
-            text.equals("разверни панель")) {
+        if (text.equals("открой панель")) {
             return LocalCommand.EXPAND;
         }
 
