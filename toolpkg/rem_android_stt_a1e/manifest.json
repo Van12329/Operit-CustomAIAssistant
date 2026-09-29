@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.rem.android_stt_a1e",
+  "version": "0.5.0",
+  "api_version": "1.0.0",
+  "main": "dist/main.js",
+  "display_name": {"en": "Rem Android STT A1E", "zh": "Rem Android STT A1E"},
+  "description": {"en": "Diagnoses default Android SpeechRecognizer timing for Russian without system UI.", "zh": "Android system STT timing diagnostic."},
+  "enabled_by_default": true,
+  "subpackages": [{"id": "rem_android_stt_a1e", "entry": "dist/packages/rem_android_stt_a1e.js"}],
+  "resources": [{"key": "android_stt_a1e_helper", "path": "resources/android-stt-a1e-helper.dex", "mime": "application/vnd.android.dex"}]
+}
