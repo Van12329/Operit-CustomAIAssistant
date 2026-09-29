@@ -421,14 +421,12 @@ public final class AndroidSttBridgeHelper {
                         increment(app, "resultsSent");
                         writeState(app, "SENT_TO_OPERIT", text, lastPartial, 0, "", "VOICE_MESSAGE_SENT");
 
-                        // Fallback: if runtime hooks are delayed/missing, re-check later.
-                        MAIN.postDelayed(() -> {
-                            if (!isGenerationActive(generation)) return;
-                            if (waitingForAi && !runtimeBusyObserved) {
-                                waitingForAi = false;
-                                scheduleRestartAfterAi(app, 1200);
-                            }
-                        }, 12000);
+                        // The bridge is self-contained: poll FloatingChatService processing
+                        // state and VoiceService speaking state, then resume Android STT.
+                        MAIN.postDelayed(
+                            () -> waitForAiAndTtsThenRestart(app, generation, 0, false),
+                            220
+                        );
                     } else {
                         increment(app, "sendFailures");
                         waitingForAi = false;
@@ -508,6 +506,90 @@ public final class AndroidSttBridgeHelper {
         recognizer = null;
         if (r != null) {
             try { r.destroy(); } catch (Throwable ignored) {}
+        }
+    }
+
+    private static void waitForAiAndTtsThenRestart(
+        Context app,
+        long generation,
+        int waitedMs,
+        boolean observedActivity
+    ) {
+        if (!isGenerationActive(generation)) return;
+
+        boolean aiBusy = isFloatingAiBusy();
+        boolean speaking = isOperitVoiceSpeaking(app);
+        boolean observed = observedActivity || aiBusy || speaking;
+
+        markString(
+            app,
+            "lastRuntimeState",
+            aiBusy ? "processing" : (speaking ? "speaking" : "idle")
+        );
+
+        if (observed && !aiBusy && !speaking) {
+            waitingForAi = false;
+            runtimeBusyObserved = true;
+            writeState(app, "TURN_COMPLETE", "", "", 0, "", "AI_TTS_COMPLETE");
+
+            // Small grace period prevents a race where streaming TTS starts
+            // just after the chat processing state becomes idle.
+            MAIN.postDelayed(() -> {
+                if (!isGenerationActive(generation)) return;
+                startWhenTtsIdle(app, generation, 0);
+            }, 900);
+            return;
+        }
+
+        // If no busy/speaking state was observable (provider/UI timing edge case),
+        // do not wedge the voice session forever.
+        if (!observed && waitedMs >= 12000) {
+            waitingForAi = false;
+            writeState(app, "TURN_FALLBACK", "", "", 0, "", "AI_STATE_NOT_OBSERVED");
+            scheduleRestartAfterAi(app, 900);
+            return;
+        }
+
+        if (waitedMs >= 90000) {
+            waitingForAi = false;
+            writeState(app, "TURN_TIMEOUT", "", "", -406, "AI/TTS wait timeout", "AI_TTS_TIMEOUT");
+            scheduleRestartAfterAi(app, 1200);
+            return;
+        }
+
+        MAIN.postDelayed(
+            () -> waitForAiAndTtsThenRestart(
+                app,
+                generation,
+                waitedMs + 220,
+                observed
+            ),
+            220
+        );
+    }
+
+    private static boolean isFloatingAiBusy() {
+        try {
+            Object service = getFloatingServiceInstance();
+            if (service == null) return false;
+
+            Method getState = service.getClass().getMethod("getInputProcessingState");
+            Object stateHolder = getState.invoke(service);
+            if (stateHolder == null) return false;
+
+            Method getValue = stateHolder.getClass().getMethod("getValue");
+            Object value = getValue.invoke(stateHolder);
+            if (value == null) return false;
+
+            String simple = value.getClass().getSimpleName();
+            if (simple == null) simple = "";
+            String normalized = simple.toLowerCase(Locale.ROOT);
+
+            return !normalized.contains("idle")
+                && !normalized.contains("completed")
+                && !normalized.contains("error");
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
