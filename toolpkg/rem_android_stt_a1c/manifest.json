@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.rem.android_stt_a1c",
+  "version": "0.3.0",
+  "api_version": "1.0.0",
+  "main": "dist/main.js",
+  "display_name": {"en": "Rem Android STT A1C", "zh": "Rem Android STT A1C"},
+  "description": {"en": "Checks ru-RU on-device recognition model support and can trigger model download.", "zh": "Checks ru-RU model support."},
+  "enabled_by_default": true,
+  "subpackages": [{"id": "rem_android_stt_a1c", "entry": "dist/packages/rem_android_stt_a1c.js"}],
+  "resources": [{"key": "android_stt_a1c_helper", "path": "resources/android-stt-a1c-helper.dex", "mime": "application/vnd.android.dex"}]
+}
