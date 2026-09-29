@@ -1,16 +1,16 @@
 {
   "schema_version": 1,
   "toolpkg_id": "com.rem.android_stt_bridge",
-  "version": "0.8.6",
+  "version": "0.9.0",
   "api_version": "1.0.0",
   "main": "dist/main.js",
   "display_name": {
-    "en": "Rem Voice Session Bridge",
-    "zh": "Rem Voice Session Bridge"
+    "en": "Rem Global Android STT Bridge",
+    "zh": "Rem Global Android STT Bridge"
   },
   "description": {
-    "en": "Runs Russian Android SpeechRecognizer ru-RU, local voice-session commands, and an animated avatar-ball overlay without modifying the Operit APK.",
-    "zh": "Uses Android SpeechRecognizer for Russian wake-session STT without modifying the APK."
+    "en": "Overrides Operit voice STT with Android SpeechRecognizer for wake and manual fullscreen sessions, with RU/ES modes and avatar-ball wake UX.",
+    "zh": "Android SpeechRecognizer override for wake and manual fullscreen voice sessions with RU/ES modes."
   },
   "enabled_by_default": true,
   "subpackages": [
