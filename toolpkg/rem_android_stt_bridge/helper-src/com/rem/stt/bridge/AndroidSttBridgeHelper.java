@@ -109,10 +109,14 @@ public final class AndroidSttBridgeHelper {
                     app.registerReceiver(receiver, filter);
                 }
                 installed = true;
-                mark(app, "readyElapsedMs", SystemClock.elapsedRealtime());
-                mark(app, "readyAtEpochMs", System.currentTimeMillis());
-                writeState(app, "READY", "", "", 0, "", "BRIDGE_READY");
-                showReadyNotification(app);
+                if (enabled) {
+                    mark(app, "readyElapsedMs", SystemClock.elapsedRealtime());
+                    mark(app, "readyAtEpochMs", System.currentTimeMillis());
+                    writeState(app, "READY", "", "", 0, "", "BRIDGE_READY");
+                    showReadyNotification(app);
+                } else {
+                    writeState(app, "DISABLED", "", "", 0, "", "BRIDGE_LOADED_DISABLED");
+                }
             } catch (Throwable t) {
                 writeState(app, "INSTALL_ERROR", "", "", -401, describe(t), "INSTALL_ERROR");
                 return false;
@@ -614,6 +618,17 @@ public final class AndroidSttBridgeHelper {
                 (NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
 
             if (nm != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !nm.areNotificationsEnabled()) {
+                    setFlag(app, "readyNotificationPosted", false);
+                    try {
+                        Toast.makeText(
+                            app,
+                            "Android STT Bridge READY — можно говорить WakeWord",
+                            Toast.LENGTH_LONG
+                        ).show();
+                    } catch (Throwable ignored) {}
+                    return;
+                }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     NotificationChannel channel = nm.getNotificationChannel(READY_NOTIFICATION_CHANNEL);
                     if (channel == null) {
