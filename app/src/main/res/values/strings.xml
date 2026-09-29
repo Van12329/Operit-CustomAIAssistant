@@ -2827,6 +2827,7 @@
     
     <!-- STT Service Types -->
     <string name="speech_services_stt_type_sherpa">Sherpa NCNN (本地)</string>
+    <string name="speech_services_stt_type_vosk_ru">Vosk 俄语（离线）</string>
     <string name="speech_services_stt_type_sherpa_mnn">Sherpa MNN (本地, 带VAD)</string>
     <string name="speech_services_stt_type_openai">OpenAI STT (远程)</string>
     <string name="speech_services_stt_type_deepgram">Deepgram STT (远程)</string>
