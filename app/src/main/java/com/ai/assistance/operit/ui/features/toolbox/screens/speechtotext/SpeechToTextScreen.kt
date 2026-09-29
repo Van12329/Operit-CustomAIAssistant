@@ -183,8 +183,11 @@ fun SpeechToTextScreen(navController: NavController) {
         coroutineScope.launch {
             try {
                 // 对于Sherpa引擎，启用连续模式和部分结果
-                val continuousMode = recognitionMode == SpeechServiceFactory.SpeechServiceType.SHERPA_NCNN
-                val partialResults = recognitionMode == SpeechServiceFactory.SpeechServiceType.SHERPA_NCNN
+                val isLocalStreamingMode =
+                    recognitionMode == SpeechServiceFactory.SpeechServiceType.SHERPA_NCNN ||
+                        recognitionMode == SpeechServiceFactory.SpeechServiceType.VOSK_RU
+                val continuousMode = isLocalStreamingMode
+                val partialResults = isLocalStreamingMode
                 speechService.startRecognition(selectedLanguage, continuousMode, partialResults)
             } catch (e: Exception) {
                 error = context.getString(R.string.start_recognition_error, e.message ?: "")
@@ -207,6 +210,8 @@ fun SpeechToTextScreen(navController: NavController) {
     fun switchRecognitionMode() {
         recognitionMode = when (recognitionMode) {
             SpeechServiceFactory.SpeechServiceType.SHERPA_NCNN ->
+                SpeechServiceFactory.SpeechServiceType.VOSK_RU
+            SpeechServiceFactory.SpeechServiceType.VOSK_RU ->
                 SpeechServiceFactory.SpeechServiceType.OPENAI_STT
             SpeechServiceFactory.SpeechServiceType.OPENAI_STT ->
                 SpeechServiceFactory.SpeechServiceType.DEEPGRAM_STT
@@ -219,6 +224,7 @@ fun SpeechToTextScreen(navController: NavController) {
     fun getEngineName(mode: SpeechServiceFactory.SpeechServiceType): String {
         return when (mode) {
             SpeechServiceFactory.SpeechServiceType.SHERPA_NCNN -> context.getString(R.string.sherpa_ncnn_best)
+            SpeechServiceFactory.SpeechServiceType.VOSK_RU -> context.getString(R.string.speech_services_stt_type_vosk_ru)
             SpeechServiceFactory.SpeechServiceType.OPENAI_STT -> context.getString(R.string.speech_services_stt_type_openai)
             SpeechServiceFactory.SpeechServiceType.DEEPGRAM_STT -> context.getString(R.string.speech_services_stt_type_deepgram)
         }
