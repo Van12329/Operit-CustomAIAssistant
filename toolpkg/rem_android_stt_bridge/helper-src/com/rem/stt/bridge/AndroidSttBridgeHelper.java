@@ -62,6 +62,7 @@ public final class AndroidSttBridgeHelper {
     private static volatile boolean waitingForAi = false;
     private static volatile boolean recognizerRunning = false;
     private static volatile boolean runtimeBusyObserved = false;
+    private static volatile boolean avatarBallEnabled = true;
 
     private static SpeechRecognizer recognizer;
     private static long sessionGeneration = 0L;
@@ -73,8 +74,10 @@ public final class AndroidSttBridgeHelper {
         if (context == null) return false;
         final Context app = context.getApplicationContext();
 
-        enabled = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean("enabled", true);
+        SharedPreferences bridgePrefs =
+            app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        enabled = bridgePrefs.getBoolean("enabled", true);
+        avatarBallEnabled = bridgePrefs.getBoolean("avatarBallEnabled", true);
 
         if (installed) {
             MAIN.post(() -> probeExistingWakeSession(app));
@@ -147,6 +150,26 @@ public final class AndroidSttBridgeHelper {
         return true;
     }
 
+    public static boolean setAvatarBallEnabled(Context context, boolean value) {
+        if (context == null) return false;
+        final Context app = context.getApplicationContext();
+
+        avatarBallEnabled = value;
+        app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("avatarBallEnabled", value)
+            .apply();
+
+        MAIN.post(() -> {
+            if (!value) {
+                exitAvatarBall(app);
+            } else if (activeWakeSession && recognizerRunning) {
+                enterAvatarBall(app);
+            }
+        });
+        return true;
+    }
+
     public static void onFloatingRuntimeState(
         Context context,
         String state,
@@ -172,6 +195,7 @@ public final class AndroidSttBridgeHelper {
             case "executing_plan":
                 runtimeBusyObserved = true;
                 waitingForAi = true;
+                AvatarBallController.setState(app, "THINKING");
                 cancelAndroidRecognizer(app, false, "RUNTIME_BUSY");
                 break;
 
@@ -202,7 +226,7 @@ public final class AndroidSttBridgeHelper {
 
         try {
             JSONObject o = new JSONObject();
-            o.put("probe", "W04-A2");
+            o.put("probe", "W07-VOICE-SESSION");
             o.put("installed", installed);
             o.put("enabled", enabled);
             o.put("activeWakeSession", activeWakeSession);
@@ -220,9 +244,14 @@ public final class AndroidSttBridgeHelper {
             o.put("resultsSent", p.getInt("resultsSent", 0));
             o.put("noMatchRetries", p.getInt("noMatchRetries", 0));
             o.put("sendFailures", p.getInt("sendFailures", 0));
+            o.put("localCommands", p.getInt("localCommands", 0));
+            o.put("lastLocalCommand", p.getString("lastLocalCommand", ""));
             o.put("language", "ru-RU");
             o.put("preferOffline", true);
             o.put("systemUi", false);
+            o.put("avatarBallEnabled", avatarBallEnabled);
+            o.put("avatarBallShown", AvatarBallController.isShown());
+            o.put("avatarBallAsset", AvatarBallController.getCurrentAsset());
             o.put("readyElapsedMs", p.getLong("readyElapsedMs", 0L));
             o.put("readyAtEpochMs", p.getLong("readyAtEpochMs", 0L));
             o.put("readyNotificationPosted", p.getBoolean("readyNotificationPosted", false));
@@ -294,6 +323,8 @@ public final class AndroidSttBridgeHelper {
         runtimeBusyObserved = false;
 
         cancelAndroidRecognizer(app, true, reason);
+        AvatarBallController.hide(app);
+        setOperitFloatingVisible(true);
         writeState(app, "INACTIVE", "", "", 0, "", reason);
     }
 
@@ -359,6 +390,10 @@ public final class AndroidSttBridgeHelper {
                 public void onReadyForSpeech(Bundle params) {
                     if (!finished.get() && isGenerationActive(generation)) {
                         writeState(app, "READY", "", lastPartial, 0, "", "READY");
+                        AvatarBallController.setState(app, "LISTENING");
+                        if (avatarBallEnabled && !AvatarBallController.isShown()) {
+                            enterAvatarBall(app);
+                        }
                     }
                 }
 
@@ -366,6 +401,7 @@ public final class AndroidSttBridgeHelper {
                 public void onBeginningOfSpeech() {
                     if (!finished.get() && isGenerationActive(generation)) {
                         writeState(app, "LISTENING", "", lastPartial, 0, "", "BEGINNING_OF_SPEECH");
+                        AvatarBallController.setState(app, "LISTENING");
                     }
                 }
 
@@ -376,6 +412,7 @@ public final class AndroidSttBridgeHelper {
                 public void onEndOfSpeech() {
                     if (!finished.get() && isGenerationActive(generation)) {
                         writeState(app, "PROCESSING_STT", "", lastPartial, 0, "", "END_OF_SPEECH");
+                        AvatarBallController.setState(app, "THINKING");
                     }
                 }
 
@@ -431,8 +468,15 @@ public final class AndroidSttBridgeHelper {
                     markString(app, "lastText", text);
                     writeState(app, "RESULT", text, lastPartial, 0, "", "RESULT");
 
+                    LocalCommand localCommand = classifyLocalCommand(text);
+                    if (localCommand != LocalCommand.NONE) {
+                        handleLocalCommand(app, generation, text, localCommand);
+                        return;
+                    }
+
                     waitingForAi = true;
                     runtimeBusyObserved = false;
+                    AvatarBallController.setState(app, "THINKING");
 
                     boolean sent = sendVoiceMessageToFloating(text);
                     if (sent) {
@@ -539,6 +583,12 @@ public final class AndroidSttBridgeHelper {
         boolean speaking = isOperitVoiceSpeaking(app);
         boolean observed = observedActivity || aiBusy || speaking;
 
+        if (speaking) {
+            AvatarBallController.setState(app, "SPEAKING");
+        } else if (aiBusy) {
+            AvatarBallController.setState(app, "THINKING");
+        }
+
         markString(
             app,
             "lastRuntimeState",
@@ -549,6 +599,7 @@ public final class AndroidSttBridgeHelper {
             waitingForAi = false;
             runtimeBusyObserved = true;
             writeState(app, "TURN_COMPLETE", "", "", 0, "", "AI_TTS_COMPLETE");
+            AvatarBallController.setState(app, "IDLE");
 
             // Small grace period prevents a race where streaming TTS starts
             // just after the chat processing state becomes idle.
@@ -682,6 +733,164 @@ public final class AndroidSttBridgeHelper {
                     Toast.LENGTH_LONG
                 ).show();
             } catch (Throwable ignored) {}
+        }
+    }
+
+    private enum LocalCommand {
+        NONE,
+        COLLAPSE,
+        EXPAND,
+        CLOSE
+    }
+
+    private static LocalCommand classifyLocalCommand(String raw) {
+        String text = normalizeCommand(raw);
+        if (text.startsWith("бетти ")) {
+            text = text.substring(6).trim();
+        }
+
+        if (text.equals("закройся") ||
+            text.equals("закрой панель") ||
+            text.equals("заверши разговор") ||
+            text.equals("закончи разговор")) {
+            return LocalCommand.CLOSE;
+        }
+
+        if (text.equals("свернись") ||
+            text.equals("сверни панель") ||
+            text.equals("скрой панель") ||
+            text.equals("в шар") ||
+            text.equals("перейди в шар")) {
+            return LocalCommand.COLLAPSE;
+        }
+
+        if (text.equals("развернись") ||
+            text.equals("покажись") ||
+            text.equals("покажи панель") ||
+            text.equals("разверни панель")) {
+            return LocalCommand.EXPAND;
+        }
+
+        return LocalCommand.NONE;
+    }
+
+    private static String normalizeCommand(String raw) {
+        if (raw == null) return "";
+        return raw
+            .toLowerCase(Locale.ROOT)
+            .replace('ё', 'е')
+            .replaceAll("[^\\p{L}\\p{N}]+", " ")
+            .trim()
+            .replaceAll("\\s+", " ");
+    }
+
+    private static void handleLocalCommand(
+        Context app,
+        long generation,
+        String sourceText,
+        LocalCommand command
+    ) {
+        increment(app, "localCommands");
+        markString(app, "lastLocalCommand", command.name());
+        writeState(
+            app,
+            "LOCAL_COMMAND",
+            sourceText,
+            "",
+            0,
+            "",
+            command.name()
+        );
+
+        waitingForAi = false;
+        runtimeBusyObserved = false;
+
+        switch (command) {
+            case COLLAPSE:
+                enterAvatarBall(app);
+                MAIN.postDelayed(
+                    () -> {
+                        if (isGenerationActive(generation)) {
+                            startWhenTtsIdle(app, generation, 0);
+                        }
+                    },
+                    350
+                );
+                break;
+
+            case EXPAND:
+                exitAvatarBall(app);
+                MAIN.postDelayed(
+                    () -> {
+                        if (isGenerationActive(generation)) {
+                            startWhenTtsIdle(app, generation, 0);
+                        }
+                    },
+                    350
+                );
+                break;
+
+            case CLOSE:
+                AvatarBallController.hide(app);
+                setOperitFloatingVisible(true);
+                activeWakeSession = false;
+                sessionGeneration++;
+                closeFloatingSession();
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    private static void enterAvatarBall(Context app) {
+        if (!avatarBallEnabled || !activeWakeSession) return;
+        boolean hidden = setOperitFloatingVisible(false);
+        AvatarBallController.show(app, () -> {
+            MAIN.post(() -> exitAvatarBall(app));
+        });
+        AvatarBallController.setState(
+            app,
+            recognizerRunning ? "LISTENING" : (waitingForAi ? "THINKING" : "IDLE")
+        );
+        setFlag(app, "avatarBallLastHideSucceeded", hidden);
+        setFlag(app, "avatarBallActive", true);
+    }
+
+    private static void exitAvatarBall(Context app) {
+        AvatarBallController.hide(app);
+        setOperitFloatingVisible(true);
+        setFlag(app, "avatarBallActive", false);
+    }
+
+    private static boolean setOperitFloatingVisible(boolean visible) {
+        try {
+            Object service = getFloatingServiceInstance();
+            if (service == null) return false;
+
+            Field f = service.getClass().getDeclaredField("windowManager");
+            f.setAccessible(true);
+            Object manager = f.get(service);
+            if (manager == null) return false;
+
+            Method method =
+                manager.getClass().getMethod("setFloatingWindowVisible", boolean.class);
+            method.invoke(manager, visible);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static boolean closeFloatingSession() {
+        try {
+            Object service = getFloatingServiceInstance();
+            if (service == null) return false;
+            Method method = service.getClass().getMethod("onClose");
+            method.invoke(service);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
