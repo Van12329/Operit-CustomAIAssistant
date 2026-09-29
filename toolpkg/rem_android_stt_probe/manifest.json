@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.rem.android_stt_probe",
+  "version": "0.1.0",
+  "api_version": "1.0.0",
+  "main": "dist/main.js",
+  "display_name": {
+    "en": "Rem Android STT Probe",
+    "zh": "Rem Android STT 探针"
+  },
+  "description": {
+    "en": "Non-invasive probe for Android on-device SpeechRecognizer availability inside Operit.",
+    "zh": "在 Operit 内无侵入检测 Android 本地 SpeechRecognizer 可用性。"
+  },
+  "enabled_by_default": true,
+  "subpackages": [
+    {
+      "id": "rem_android_stt_probe",
+      "entry": "dist/packages/rem_android_stt_probe.js"
+    }
+  ]
+}
