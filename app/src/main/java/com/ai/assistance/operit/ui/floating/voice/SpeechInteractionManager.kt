@@ -155,6 +155,31 @@ class SpeechInteractionManager(
                 // Give AIForegroundService a moment to stop wake listening and release microphone
                 delay(180)
 
+                val supportedLanguages =
+                    try {
+                        speechService.getSupportedLanguages()
+                    } catch (e: Exception) {
+                        AppLogger.w(TAG, "Unable to query STT languages; falling back to zh-CN", e)
+                        emptyList()
+                    }
+                val recognitionLanguageCode =
+                    when {
+                        supportedLanguages.any {
+                            it.equals("ru", ignoreCase = true) ||
+                                it.startsWith("ru-", ignoreCase = true)
+                        } -> "ru-RU"
+                        supportedLanguages.any {
+                            it.equals("zh", ignoreCase = true) ||
+                                it.startsWith("zh-", ignoreCase = true)
+                        } -> "zh-CN"
+                        supportedLanguages.isNotEmpty() -> supportedLanguages.first()
+                        else -> "zh-CN"
+                    }
+                AppLogger.d(
+                    TAG,
+                    "Starting voice STT with language=$recognitionLanguageCode supported=$supportedLanguages"
+                )
+
                 var ok = false
                 var attempt = 0
                 while (!ok && attempt < 12) {
@@ -162,7 +187,7 @@ class SpeechInteractionManager(
                         delay(160)
                     }
                     ok = speechService.startRecognition(
-                        languageCode = "zh-CN",
+                        languageCode = recognitionLanguageCode,
                         continuousMode = true,
                         partialResults = true
                     )
