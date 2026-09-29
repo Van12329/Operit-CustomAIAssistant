@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.rem.android_stt_bridge",
+  "version": "0.7.0",
+  "api_version": "1.0.1",
+  "main": "dist/main.js",
+  "display_name": {
+    "en": "Rem Android STT Bridge",
+    "zh": "Rem Android STT Bridge"
+  },
+  "description": {
+    "en": "Replaces Operit's wake-session STT capture with Android SpeechRecognizer ru-RU without modifying the Operit APK.",
+    "zh": "Uses Android SpeechRecognizer for Russian wake-session STT without modifying the APK."
+  },
+  "enabled_by_default": true,
+  "subpackages": [
+    {
+      "id": "rem_android_stt_bridge_tools",
+      "entry": "dist/packages/rem_android_stt_bridge_tools.js"
+    }
+  ],
+  "resources": [
+    {
+      "key": "android_stt_bridge_helper",
+      "path": "resources/android-stt-bridge-helper.dex",
+      "mime": "application/vnd.android.dex"
+    }
+  ]
+}
