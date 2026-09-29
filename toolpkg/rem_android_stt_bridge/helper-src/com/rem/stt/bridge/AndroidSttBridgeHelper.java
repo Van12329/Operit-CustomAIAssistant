@@ -28,6 +28,7 @@ import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class AndroidSttBridgeHelper {
+    // v0.8.4: known-good v0.8.2 STT timing + bridge-only command accumulator.
     private static final String PREFS = "rem_android_stt_bridge";
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
