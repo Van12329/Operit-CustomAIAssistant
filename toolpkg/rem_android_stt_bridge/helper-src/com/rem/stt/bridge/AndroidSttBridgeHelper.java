@@ -25,6 +25,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class AndroidSttBridgeHelper {
@@ -51,6 +52,14 @@ public final class AndroidSttBridgeHelper {
     private static final int RESTART_AFTER_RESULT_MIN_MS = 650;
     private static final int SPEAKING_POLL_MS = 180;
     private static final int SPEAKING_MAX_WAIT_MS = 30000;
+    private static final int COMMAND_ACCUMULATOR_WINDOW_MS = 10000;
+    private static final int COMPLETE_SILENCE_MS = 3200;
+    private static final int POSSIBLY_COMPLETE_SILENCE_MS = 2200;
+    private static final int MINIMUM_UTTERANCE_MS = 9000;
+
+    private static final String RUNTIME_OWNER_KEY = "runtimeOwnerToken";
+    private static final String RUNTIME_TOKEN =
+        UUID.randomUUID().toString();
 
     private static final String READY_NOTIFICATION_CHANNEL =
         "rem_android_stt_bridge_status";
@@ -63,6 +72,8 @@ public final class AndroidSttBridgeHelper {
     private static volatile boolean recognizerRunning = false;
     private static volatile boolean runtimeBusyObserved = false;
     private static volatile boolean avatarBallEnabled = true;
+    private static volatile String pendingCommandText = "";
+    private static volatile long pendingCommandUntilElapsedMs = 0L;
 
     private static SpeechRecognizer recognizer;
     private static long sessionGeneration = 0L;
@@ -73,11 +84,20 @@ public final class AndroidSttBridgeHelper {
     public static boolean install(Context context) {
         if (context == null) return false;
         final Context app = context.getApplicationContext();
+        lastKnownContextRef = app;
 
         SharedPreferences bridgePrefs =
             app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         enabled = bridgePrefs.getBoolean("enabled", true);
         avatarBallEnabled = bridgePrefs.getBoolean("avatarBallEnabled", true);
+
+        // Process-wide lease shared through app preferences. Starting with v0.8.3,
+        // a newer helper classloader takes ownership and older compatible runtimes
+        // stop accepting STT turns.
+        bridgePrefs.edit()
+            .putString(RUNTIME_OWNER_KEY, RUNTIME_TOKEN)
+            .putLong("runtimeOwnerClaimedAtElapsedMs", SystemClock.elapsedRealtime())
+            .commit();
 
         if (installed) {
             MAIN.post(() -> probeExistingWakeSession(app));
@@ -252,6 +272,10 @@ public final class AndroidSttBridgeHelper {
             o.put("avatarBallEnabled", avatarBallEnabled);
             o.put("avatarBallShown", AvatarBallController.isShown());
             o.put("avatarBallAsset", AvatarBallController.getCurrentAsset());
+            o.put("runtimeOwner", isRuntimeOwner(context.getApplicationContext()));
+            o.put("runtimeToken", RUNTIME_TOKEN);
+            o.put("pendingCommandText", pendingCommandText);
+            o.put("pendingCommandUntilElapsedMs", pendingCommandUntilElapsedMs);
             o.put("readyElapsedMs", p.getLong("readyElapsedMs", 0L));
             o.put("readyAtEpochMs", p.getLong("readyAtEpochMs", 0L));
             o.put("readyNotificationPosted", p.getBoolean("readyNotificationPosted", false));
@@ -296,6 +320,7 @@ public final class AndroidSttBridgeHelper {
         activeWakeSession = true;
         waitingForAi = false;
         runtimeBusyObserved = false;
+        clearPendingCommand();
 
         increment(app, "sessionStarts");
         mark(app, "sessionActivatedElapsedMs", SystemClock.elapsedRealtime());
@@ -321,6 +346,7 @@ public final class AndroidSttBridgeHelper {
         activeWakeSession = false;
         waitingForAi = false;
         runtimeBusyObserved = false;
+        clearPendingCommand();
 
         cancelAndroidRecognizer(app, true, reason);
         AvatarBallController.hide(app);
@@ -329,7 +355,23 @@ public final class AndroidSttBridgeHelper {
     }
 
     private static boolean isGenerationActive(long generation) {
-        return enabled && activeWakeSession && generation == sessionGeneration;
+        return enabled &&
+            activeWakeSession &&
+            generation == sessionGeneration &&
+            isRuntimeOwner(lastKnownContext());
+    }
+
+    private static Context lastKnownContextRef;
+
+    private static Context lastKnownContext() {
+        return lastKnownContextRef;
+    }
+
+    private static boolean isRuntimeOwner(Context app) {
+        if (app == null) return false;
+        String owner = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(RUNTIME_OWNER_KEY, "");
+        return RUNTIME_TOKEN.equals(owner);
     }
 
     private static void scheduleRestartAfterAi(Context app, int delayMs) {
@@ -470,8 +512,67 @@ public final class AndroidSttBridgeHelper {
 
                     LocalCommand localCommand = classifyLocalCommand(text);
                     if (localCommand != LocalCommand.NONE) {
+                        clearPendingCommand();
                         handleLocalCommand(app, generation, text, localCommand);
                         return;
+                    }
+
+                    String normalizedResult = normalizeCommand(text);
+                    if (shouldAccumulateCommandFragment(normalizedResult)) {
+                        String combined = appendPendingCommand(normalizedResult);
+                        LocalCommand combinedCommand = classifyLocalCommand(combined);
+                        if (combinedCommand != LocalCommand.NONE) {
+                            clearPendingCommand();
+                            handleLocalCommand(app, generation, combined, combinedCommand);
+                            return;
+                        }
+
+                        writeState(
+                            app,
+                            "COMMAND_WAIT",
+                            combined,
+                            "",
+                            0,
+                            "",
+                            "LOCAL_COMMAND_FRAGMENT"
+                        );
+                        AvatarBallController.setState(app, "LISTENING");
+                        MAIN.postDelayed(
+                            () -> startWhenTtsIdle(app, generation, 0),
+                            140
+                        );
+                        return;
+                    }
+
+                    if (hasPendingCommand()) {
+                        String combined = appendPendingCommand(normalizedResult);
+                        LocalCommand combinedCommand = classifyLocalCommand(combined);
+                        if (combinedCommand != LocalCommand.NONE) {
+                            clearPendingCommand();
+                            handleLocalCommand(app, generation, combined, combinedCommand);
+                            return;
+                        }
+
+                        // If the accumulated phrase still looks command-like, keep
+                        // waiting until the 10 s command window expires.
+                        if (looksCommandLike(combined) && hasPendingCommand()) {
+                            writeState(
+                                app,
+                                "COMMAND_WAIT",
+                                combined,
+                                "",
+                                0,
+                                "",
+                                "LOCAL_COMMAND_ACCUMULATING"
+                            );
+                            MAIN.postDelayed(
+                                () -> startWhenTtsIdle(app, generation, 0),
+                                140
+                            );
+                            return;
+                        }
+
+                        clearPendingCommand();
                     }
 
                     waitingForAi = true;
@@ -527,6 +628,18 @@ public final class AndroidSttBridgeHelper {
             intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
             intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
             intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+            intent.putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                COMPLETE_SILENCE_MS
+            );
+            intent.putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                POSSIBLY_COMPLETE_SILENCE_MS
+            );
+            intent.putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS,
+                MINIMUM_UTTERANCE_MS
+            );
 
             increment(app, "recognitionStarts");
             mark(app, "lastRecognitionStartElapsedMs", SystemClock.elapsedRealtime());
@@ -745,24 +858,111 @@ public final class AndroidSttBridgeHelper {
 
     private static LocalCommand classifyLocalCommand(String raw) {
         String text = normalizeCommand(raw);
+        String payload = stripBettyLead(text);
 
-        // Match the command payload by suffix, not by an exact wake/name prefix.
-        // Android STT may render "Бетти" as "бети", "петти", "мети", etc.
-        // These local commands must never fall through to the AI/UI tool path.
-        if (matchesCommandSuffix(text, "вернись в кристал") ||
-            matchesCommandSuffix(text, "вернись в кристалл")) {
+        if (matchesCommandSuffix(payload, "вернись в кристал") ||
+            matchesCommandSuffix(payload, "вернись в кристалл") ||
+            (wordCount(payload) <= 5 &&
+             payload.contains("верн") &&
+             payload.contains("кристал"))) {
             return LocalCommand.CLOSE;
         }
 
-        if (matchesCommandSuffix(text, "скрой панель")) {
+        if (matchesCommandSuffix(payload, "скрой панель") ||
+            (wordCount(payload) <= 4 &&
+             payload.contains("скр") &&
+             !payload.contains("раскр") &&
+             payload.contains("панел"))) {
             return LocalCommand.COLLAPSE;
         }
 
-        if (matchesCommandSuffix(text, "раскрой панель")) {
+        if (matchesCommandSuffix(payload, "раскрой панель") ||
+            (wordCount(payload) <= 4 &&
+             payload.contains("раскр") &&
+             payload.contains("панел"))) {
             return LocalCommand.EXPAND;
         }
 
         return LocalCommand.NONE;
+    }
+
+    private static String stripBettyLead(String text) {
+        if (text == null || text.isEmpty()) return "";
+        String[] parts = text.split(" ", 2);
+        if (parts.length == 0) return text;
+        if (isBettyToken(parts[0])) {
+            return parts.length > 1 ? parts[1].trim() : "";
+        }
+        return text;
+    }
+
+    private static boolean isBettyToken(String token) {
+        if (token == null) return false;
+        return token.equals("бетти") ||
+            token.equals("бети") ||
+            token.equals("петти") ||
+            token.equals("пети") ||
+            token.equals("метти") ||
+            token.equals("мети") ||
+            token.equals("бетти") ||
+            token.equals("бетти");
+    }
+
+    private static boolean shouldAccumulateCommandFragment(String text) {
+        if (text == null || text.isEmpty()) return false;
+        String[] parts = text.split(" ");
+        if (parts.length == 1 && isBettyToken(parts[0])) return true;
+        if (parts.length > 0 && isBettyToken(parts[0])) {
+            String payload = stripBettyLead(text);
+            return payload.isEmpty() || looksCommandLike(payload);
+        }
+        return false;
+    }
+
+    private static boolean looksCommandLike(String text) {
+        if (text == null || text.isEmpty()) return false;
+        String n = normalizeCommand(text);
+        return n.contains("панел") ||
+            n.contains("скр") ||
+            n.contains("раскр") ||
+            n.contains("верн") ||
+            n.contains("кристал");
+    }
+
+    private static String appendPendingCommand(String text) {
+        long now = SystemClock.elapsedRealtime();
+        if (pendingCommandUntilElapsedMs < now) {
+            pendingCommandText = "";
+        }
+
+        if (pendingCommandText == null || pendingCommandText.isEmpty()) {
+            pendingCommandText = text == null ? "" : text;
+        } else if (text != null && !text.isEmpty()) {
+            pendingCommandText = pendingCommandText + " " + text;
+        }
+
+        pendingCommandText = normalizeCommand(pendingCommandText);
+        pendingCommandUntilElapsedMs = now + COMMAND_ACCUMULATOR_WINDOW_MS;
+        return pendingCommandText;
+    }
+
+    private static boolean hasPendingCommand() {
+        if (pendingCommandText == null || pendingCommandText.isEmpty()) return false;
+        if (SystemClock.elapsedRealtime() > pendingCommandUntilElapsedMs) {
+            clearPendingCommand();
+            return false;
+        }
+        return true;
+    }
+
+    private static void clearPendingCommand() {
+        pendingCommandText = "";
+        pendingCommandUntilElapsedMs = 0L;
+    }
+
+    private static int wordCount(String text) {
+        if (text == null || text.trim().isEmpty()) return 0;
+        return text.trim().split("\\s+").length;
     }
 
     private static boolean matchesCommandSuffix(String text, String command) {
