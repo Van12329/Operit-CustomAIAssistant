@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.rem.android_stt_a1b",
+  "version": "0.2.0",
+  "api_version": "1.0.0",
+  "main": "dist/main.js",
+  "display_name": {"en": "Rem Android STT A1B", "zh": "Rem Android STT A1B"},
+  "description": {"en": "Non-blocking Russian Android on-device STT probe using a Java-only listener and status polling.", "zh": "Android STT A1B"},
+  "enabled_by_default": true,
+  "subpackages": [{"id": "rem_android_stt_a1b", "entry": "dist/packages/rem_android_stt_a1b.js"}],
+  "resources": [{"key": "android_stt_a1b_helper", "path": "resources/android-stt-a1b-helper.dex", "mime": "application/vnd.android.dex"}]
+}

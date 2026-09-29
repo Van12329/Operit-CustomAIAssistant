@@ -1,0 +1,58 @@
+name: Build Rem Android STT A1B
+
+on:
+  push:
+    branches:
+      - feature/android-stt-toolpkg-probe
+    paths:
+      - .github/workflows/android-stt-a1b.yml
+      - toolpkg/rem_android_stt_a1b/**
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
+        with:
+          packages: ''
+      - name: Install SDK
+        run: sdkmanager --install "platforms;android-36" "build-tools;35.0.0"
+      - name: Compile helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="toolpkg/rem_android_stt_a1b"
+          mkdir -p "$ROOT/build/classes" "$ROOT/build/dex" "$ROOT/resources"
+          javac -source 8 -target 8 \
+            -cp "$ANDROID_HOME/platforms/android-36/android.jar" \
+            -d "$ROOT/build/classes" \
+            "$ROOT/helper-src/com/rem/stt/a1b/AndroidSttA1bHelper.java"
+          mapfile -t class_files < <(find "$ROOT/build/classes" -name '*.class' -print)
+          "$ANDROID_HOME/build-tools/35.0.0/d8" \
+            --lib "$ANDROID_HOME/platforms/android-36/android.jar" \
+            --output "$ROOT/build/dex" \
+            "${class_files[@]}"
+          cp "$ROOT/build/dex/classes.dex" "$ROOT/resources/android-stt-a1b-helper.dex"
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="toolpkg/rem_android_stt_a1b"
+          OUT="Rem-Android-STT-A1B-v0.2.0.toolpkg"
+          (cd "$ROOT" && zip -qr "$GITHUB_WORKSPACE/$OUT" manifest.json dist resources/android-stt-a1b-helper.dex)
+          unzip -l "$OUT"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: Rem-Android-STT-A1B-v0.2.0
+          path: Rem-Android-STT-A1B-v0.2.0.toolpkg
+          if-no-files-found: error
+          retention-days: 14
