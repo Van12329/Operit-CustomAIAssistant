@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.rem.android_stt_a1f",
+  "version": "0.6.0",
+  "api_version": "1.0.0",
+  "main": "dist/main.js",
+  "display_name": {"en": "Rem Android STT A1F", "zh": "Rem Android STT A1F"},
+  "description": {"en": "Tests explicit wake-listener release before Russian Android SpeechRecognizer.", "zh": "Android STT wake handoff test."},
+  "enabled_by_default": true,
+  "subpackages": [{"id": "rem_android_stt_a1f", "entry": "dist/packages/rem_android_stt_a1f.js"}],
+  "resources": [{"key": "android_stt_a1f_helper", "path": "resources/android-stt-a1f-helper.dex", "mime": "application/vnd.android.dex"}]
+}
