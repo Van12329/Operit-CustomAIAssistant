@@ -1,0 +1,675 @@
+package com.rem.stt.bridge;
+
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
+import android.widget.Toast;
+
+import org.json.JSONObject;
+
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+public final class AndroidSttBridgeHelper {
+    private static final String PREFS = "rem_android_stt_bridge";
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+
+    private static final String ACTION_WINDOW_SHOWN =
+        "com.ai.assistance.operit.action.FLOATING_CHAT_WINDOW_SHOWN";
+    private static final String ACTION_FLOATING_STOPPED =
+        "com.ai.assistance.operit.action.FLOATING_CHAT_SERVICE_STOPPED";
+
+    private static final String FLOATING_SERVICE =
+        "com.ai.assistance.operit.services.FloatingChatService";
+    private static final String SPEECH_FACTORY =
+        "com.ai.assistance.operit.api.speech.SpeechServiceFactory";
+    private static final String VOICE_FACTORY =
+        "com.ai.assistance.operit.api.voice.VoiceServiceFactory";
+    private static final String PROMPT_TYPE =
+        "com.ai.assistance.operit.data.model.PromptFunctionType";
+
+    private static final int INITIAL_HANDOFF_DELAY_MS = 900;
+    private static final int STOCK_RELEASE_SETTLE_MS = 260;
+    private static final int RESTART_AFTER_NO_MATCH_MS = 320;
+    private static final int RESTART_AFTER_RESULT_MIN_MS = 650;
+    private static final int SPEAKING_POLL_MS = 180;
+    private static final int SPEAKING_MAX_WAIT_MS = 30000;
+
+    private static volatile boolean installed = false;
+    private static volatile boolean enabled = true;
+    private static volatile boolean activeWakeSession = false;
+    private static volatile boolean waitingForAi = false;
+    private static volatile boolean recognizerRunning = false;
+    private static volatile boolean runtimeBusyObserved = false;
+
+    private static SpeechRecognizer recognizer;
+    private static long sessionGeneration = 0L;
+    private static BroadcastReceiver receiver;
+
+    private AndroidSttBridgeHelper() {}
+
+    public static boolean install(Context context) {
+        if (context == null) return false;
+        final Context app = context.getApplicationContext();
+
+        enabled = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean("enabled", true);
+
+        if (installed) {
+            MAIN.post(() -> probeExistingWakeSession(app));
+            return true;
+        }
+
+        synchronized (AndroidSttBridgeHelper.class) {
+            if (installed) return true;
+
+            receiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context ctx, Intent intent) {
+                    if (intent == null || intent.getAction() == null) return;
+                    String action = intent.getAction();
+
+                    if (ACTION_WINDOW_SHOWN.equals(action)) {
+                        MAIN.post(() -> onFloatingWindowShown(app));
+                    } else if (ACTION_FLOATING_STOPPED.equals(action)) {
+                        MAIN.post(() -> deactivate(app, "FLOATING_STOPPED"));
+                    }
+                }
+            };
+
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(ACTION_WINDOW_SHOWN);
+            filter.addAction(ACTION_FLOATING_STOPPED);
+
+            try {
+                if (Build.VERSION.SDK_INT >= 33) {
+                    app.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
+                } else {
+                    app.registerReceiver(receiver, filter);
+                }
+                installed = true;
+                writeState(app, "INSTALLED", "", "", 0, "", "INSTALL");
+            } catch (Throwable t) {
+                writeState(app, "INSTALL_ERROR", "", "", -401, describe(t), "INSTALL_ERROR");
+                return false;
+            }
+        }
+
+        MAIN.post(() -> probeExistingWakeSession(app));
+        return true;
+    }
+
+    public static boolean setEnabled(Context context, boolean value) {
+        if (context == null) return false;
+        final Context app = context.getApplicationContext();
+
+        enabled = value;
+        app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("enabled", value)
+            .commit();
+
+        MAIN.post(() -> {
+            if (!value) {
+                deactivate(app, "DISABLED");
+            } else {
+                probeExistingWakeSession(app);
+            }
+        });
+        return true;
+    }
+
+    public static void onFloatingRuntimeState(
+        Context context,
+        String state,
+        boolean isActive
+    ) {
+        if (context == null || state == null) return;
+        final Context app = context.getApplicationContext();
+        final String normalized = state.trim().toLowerCase(Locale.ROOT);
+
+        markString(app, "lastRuntimeState", normalized);
+        mark(app, "lastRuntimeStateAtElapsedMs", SystemClock.elapsedRealtime());
+
+        if (!enabled || !activeWakeSession) return;
+
+        switch (normalized) {
+            case "processing":
+            case "connecting":
+            case "receiving":
+            case "executing_tool":
+            case "tool_progress":
+            case "processing_tool_result":
+            case "summarizing":
+            case "executing_plan":
+                runtimeBusyObserved = true;
+                waitingForAi = true;
+                cancelAndroidRecognizer(app, false, "RUNTIME_BUSY");
+                break;
+
+            case "completed":
+            case "error":
+                if (waitingForAi || runtimeBusyObserved) {
+                    waitingForAi = false;
+                    scheduleRestartAfterAi(app, RESTART_AFTER_RESULT_MIN_MS);
+                }
+                break;
+
+            case "idle":
+                if (!isActive && (waitingForAi || runtimeBusyObserved)) {
+                    waitingForAi = false;
+                    scheduleRestartAfterAi(app, RESTART_AFTER_RESULT_MIN_MS);
+                }
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    public static String getStatusJson(Context context) {
+        if (context == null) return "{\"state\":\"NO_CONTEXT\"}";
+        SharedPreferences p = context.getApplicationContext()
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+
+        try {
+            JSONObject o = new JSONObject();
+            o.put("probe", "W04-A2");
+            o.put("installed", installed);
+            o.put("enabled", enabled);
+            o.put("activeWakeSession", activeWakeSession);
+            o.put("waitingForAi", waitingForAi);
+            o.put("recognizerRunning", recognizerRunning);
+            o.put("state", p.getString("state", "IDLE"));
+            o.put("lastEvent", p.getString("lastEvent", ""));
+            o.put("lastText", p.getString("lastText", ""));
+            o.put("partial", p.getString("partial", ""));
+            o.put("errorCode", p.getInt("errorCode", 0));
+            o.put("error", p.getString("error", ""));
+            o.put("lastRuntimeState", p.getString("lastRuntimeState", ""));
+            o.put("sessionStarts", p.getInt("sessionStarts", 0));
+            o.put("recognitionStarts", p.getInt("recognitionStarts", 0));
+            o.put("resultsSent", p.getInt("resultsSent", 0));
+            o.put("noMatchRetries", p.getInt("noMatchRetries", 0));
+            o.put("sendFailures", p.getInt("sendFailures", 0));
+            o.put("language", "ru-RU");
+            o.put("preferOffline", true);
+            o.put("systemUi", false);
+            o.put("updatedAtEpochMs", p.getLong("updatedAtEpochMs", 0L));
+            return o.toString();
+        } catch (Throwable t) {
+            return "{\"state\":\"STATUS_ERROR\",\"error\":\"" + escape(describe(t)) + "\"}";
+        }
+    }
+
+    public static boolean forceProbe(Context context) {
+        if (context == null) return false;
+        MAIN.post(() -> probeExistingWakeSession(context.getApplicationContext()));
+        return true;
+    }
+
+    private static void onFloatingWindowShown(Context app) {
+        if (!enabled) return;
+
+        boolean wakeLaunched = isWakeLaunched();
+        setFlag(app, "lastWindowWakeLaunched", wakeLaunched);
+
+        if (!wakeLaunched) {
+            writeState(app, "IGNORED", "", "", 0, "", "WINDOW_NOT_WAKE_LAUNCHED");
+            return;
+        }
+
+        activate(app, "WINDOW_SHOWN_WAKE");
+    }
+
+    private static void probeExistingWakeSession(Context app) {
+        if (!enabled) return;
+        if (isWakeLaunched()) {
+            activate(app, "PROBE_EXISTING_WAKE");
+        }
+    }
+
+    private static void activate(Context app, String reason) {
+        sessionGeneration++;
+        final long generation = sessionGeneration;
+
+        activeWakeSession = true;
+        waitingForAi = false;
+        runtimeBusyObserved = false;
+
+        increment(app, "sessionStarts");
+        mark(app, "sessionActivatedElapsedMs", SystemClock.elapsedRealtime());
+        writeState(app, "ACTIVATING", "", "", 0, "", reason);
+
+        // Let Operit's normal wake->fullscreen handoff finish first.
+        // Then shut down only its STT provider and start Android SpeechRecognizer.
+        MAIN.postDelayed(() -> {
+            if (!isGenerationActive(generation)) return;
+
+            shutdownOperitSpeechProvider(app);
+            writeState(app, "STOCK_STT_RELEASE", "", "", 0, "", "STOCK_STT_SHUTDOWN");
+
+            MAIN.postDelayed(() -> {
+                if (!isGenerationActive(generation)) return;
+                startWhenTtsIdle(app, generation, 0);
+            }, STOCK_RELEASE_SETTLE_MS);
+        }, INITIAL_HANDOFF_DELAY_MS);
+    }
+
+    private static void deactivate(Context app, String reason) {
+        sessionGeneration++;
+        activeWakeSession = false;
+        waitingForAi = false;
+        runtimeBusyObserved = false;
+
+        cancelAndroidRecognizer(app, true, reason);
+        writeState(app, "INACTIVE", "", "", 0, "", reason);
+    }
+
+    private static boolean isGenerationActive(long generation) {
+        return enabled && activeWakeSession && generation == sessionGeneration;
+    }
+
+    private static void scheduleRestartAfterAi(Context app, int delayMs) {
+        final long generation = sessionGeneration;
+        MAIN.postDelayed(() -> {
+            if (!isGenerationActive(generation)) return;
+            startWhenTtsIdle(app, generation, 0);
+        }, Math.max(250, delayMs));
+    }
+
+    private static void startWhenTtsIdle(Context app, long generation, int waitedMs) {
+        if (!isGenerationActive(generation) || waitingForAi) return;
+
+        // The built-in wave UI may have started or retried its own provider.
+        // Re-shutdown it immediately before each Android STT turn.
+        shutdownOperitSpeechProvider(app);
+
+        boolean speaking = isOperitVoiceSpeaking(app);
+        if (speaking && waitedMs < SPEAKING_MAX_WAIT_MS) {
+            writeState(app, "WAIT_TTS", "", "", 0, "", "WAIT_TTS");
+            MAIN.postDelayed(
+                () -> startWhenTtsIdle(app, generation, waitedMs + SPEAKING_POLL_MS),
+                SPEAKING_POLL_MS
+            );
+            return;
+        }
+
+        startAndroidRecognizer(app, generation);
+    }
+
+    private static void startAndroidRecognizer(Context app, long generation) {
+        if (!isGenerationActive(generation) || waitingForAi || recognizerRunning) return;
+
+        try {
+            if (!SpeechRecognizer.isRecognitionAvailable(app)) {
+                writeState(
+                    app,
+                    "ERROR",
+                    "",
+                    "",
+                    -402,
+                    "SpeechRecognizer is not available",
+                    "ANDROID_STT_UNAVAILABLE"
+                );
+                return;
+            }
+
+            destroyRecognizerSilently();
+            recognizer = SpeechRecognizer.createSpeechRecognizer(app);
+            recognizerRunning = true;
+
+            final AtomicBoolean finished = new AtomicBoolean(false);
+
+            recognizer.setRecognitionListener(new RecognitionListener() {
+                private String lastPartial = "";
+
+                @Override
+                public void onReadyForSpeech(Bundle params) {
+                    if (!finished.get() && isGenerationActive(generation)) {
+                        writeState(app, "READY", "", lastPartial, 0, "", "READY");
+                    }
+                }
+
+                @Override
+                public void onBeginningOfSpeech() {
+                    if (!finished.get() && isGenerationActive(generation)) {
+                        writeState(app, "LISTENING", "", lastPartial, 0, "", "BEGINNING_OF_SPEECH");
+                    }
+                }
+
+                @Override public void onRmsChanged(float rmsdB) {}
+                @Override public void onBufferReceived(byte[] buffer) {}
+
+                @Override
+                public void onEndOfSpeech() {
+                    if (!finished.get() && isGenerationActive(generation)) {
+                        writeState(app, "PROCESSING_STT", "", lastPartial, 0, "", "END_OF_SPEECH");
+                    }
+                }
+
+                @Override
+                public void onError(int error) {
+                    if (!finished.compareAndSet(false, true)) return;
+
+                    recognizerRunning = false;
+                    destroyRecognizerSilently();
+
+                    if (!isGenerationActive(generation)) return;
+
+                    String name = errorName(error);
+                    writeState(app, "STT_ERROR", "", lastPartial, error, name, "ERROR");
+
+                    if (error == SpeechRecognizer.ERROR_NO_MATCH ||
+                        error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                        increment(app, "noMatchRetries");
+                        MAIN.postDelayed(
+                            () -> startWhenTtsIdle(app, generation, 0),
+                            RESTART_AFTER_NO_MATCH_MS
+                        );
+                    } else if (activeWakeSession) {
+                        MAIN.postDelayed(
+                            () -> startWhenTtsIdle(app, generation, 0),
+                            900
+                        );
+                    }
+                }
+
+                @Override
+                public void onResults(Bundle results) {
+                    String text = firstResult(results);
+                    if (!finished.compareAndSet(false, true)) return;
+
+                    recognizerRunning = false;
+                    destroyRecognizerSilently();
+
+                    if (!isGenerationActive(generation)) return;
+
+                    if (text.isEmpty()) {
+                        writeState(
+                            app, "STT_ERROR", "", lastPartial, -403,
+                            "Recognition returned no text", "EMPTY_RESULT"
+                        );
+                        MAIN.postDelayed(
+                            () -> startWhenTtsIdle(app, generation, 0),
+                            RESTART_AFTER_NO_MATCH_MS
+                        );
+                        return;
+                    }
+
+                    markString(app, "lastText", text);
+                    writeState(app, "RESULT", text, lastPartial, 0, "", "RESULT");
+
+                    waitingForAi = true;
+                    runtimeBusyObserved = false;
+
+                    boolean sent = sendVoiceMessageToFloating(text);
+                    if (sent) {
+                        increment(app, "resultsSent");
+                        writeState(app, "SENT_TO_OPERIT", text, lastPartial, 0, "", "VOICE_MESSAGE_SENT");
+
+                        // Fallback: if runtime hooks are delayed/missing, re-check later.
+                        MAIN.postDelayed(() -> {
+                            if (!isGenerationActive(generation)) return;
+                            if (waitingForAi && !runtimeBusyObserved) {
+                                waitingForAi = false;
+                                scheduleRestartAfterAi(app, 1200);
+                            }
+                        }, 12000);
+                    } else {
+                        increment(app, "sendFailures");
+                        waitingForAi = false;
+                        writeState(
+                            app, "SEND_ERROR", text, lastPartial, -404,
+                            "Could not deliver recognized text to FloatingChatService",
+                            "VOICE_MESSAGE_SEND_FAILED"
+                        );
+                        MAIN.postDelayed(
+                            () -> startWhenTtsIdle(app, generation, 0),
+                            900
+                        );
+                    }
+                }
+
+                @Override
+                public void onPartialResults(Bundle partialResults) {
+                    String text = firstResult(partialResults);
+                    if (!text.isEmpty() && !finished.get() && isGenerationActive(generation)) {
+                        lastPartial = text;
+                        markString(app, "partial", text);
+                        writeState(app, "PARTIAL", "", lastPartial, 0, "", "PARTIAL");
+                    }
+                }
+
+                @Override public void onEvent(int eventType, Bundle params) {}
+            });
+
+            Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            intent.putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            );
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU");
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ru-RU");
+            intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
+            intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+            intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+
+            increment(app, "recognitionStarts");
+            mark(app, "lastRecognitionStartElapsedMs", SystemClock.elapsedRealtime());
+            writeState(app, "STARTING", "", "", 0, "", "START_LISTENING");
+            recognizer.startListening(intent);
+        } catch (Throwable t) {
+            recognizerRunning = false;
+            destroyRecognizerSilently();
+            writeState(app, "ERROR", "", "", -405, describe(t), "START_EXCEPTION");
+
+            if (isGenerationActive(generation)) {
+                MAIN.postDelayed(
+                    () -> startWhenTtsIdle(app, generation, 0),
+                    1200
+                );
+            }
+        }
+    }
+
+    private static void cancelAndroidRecognizer(Context app, boolean destroy, String reason) {
+        SpeechRecognizer r = recognizer;
+        recognizerRunning = false;
+        recognizer = null;
+
+        if (r != null) {
+            try { r.cancel(); } catch (Throwable ignored) {}
+            if (destroy) {
+                try { r.destroy(); } catch (Throwable ignored) {}
+            } else {
+                try { r.destroy(); } catch (Throwable ignored) {}
+            }
+        }
+
+        markString(app, "lastCancelReason", reason == null ? "" : reason);
+    }
+
+    private static void destroyRecognizerSilently() {
+        SpeechRecognizer r = recognizer;
+        recognizer = null;
+        if (r != null) {
+            try { r.destroy(); } catch (Throwable ignored) {}
+        }
+    }
+
+    private static boolean isWakeLaunched() {
+        try {
+            Object service = getFloatingServiceInstance();
+            if (service == null) return false;
+            Method m = service.getClass().getMethod("isWakeLaunched");
+            Object value = m.invoke(service);
+            return value instanceof Boolean && (Boolean) value;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static Object getFloatingServiceInstance() {
+        try {
+            Class<?> outer = Class.forName(FLOATING_SERVICE);
+            Field companionField = outer.getField("Companion");
+            Object companion = companionField.get(null);
+            Method getter = companion.getClass().getMethod("getInstance");
+            return getter.invoke(companion);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static boolean sendVoiceMessageToFloating(String text) {
+        try {
+            Object service = getFloatingServiceInstance();
+            if (service == null) return false;
+
+            Class<?> promptTypeClass = Class.forName(PROMPT_TYPE);
+            @SuppressWarnings({"rawtypes", "unchecked"})
+            Object voice = Enum.valueOf((Class<? extends Enum>) promptTypeClass.asSubclass(Enum.class), "VOICE");
+
+            Method method = service.getClass().getMethod(
+                "onSendMessage",
+                String.class,
+                promptTypeClass
+            );
+            method.invoke(service, text, voice);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static void shutdownOperitSpeechProvider(Context context) {
+        try {
+            Class<?> factory = Class.forName(SPEECH_FACTORY);
+            Field instanceField = factory.getField("INSTANCE");
+            Object singleton = instanceField.get(null);
+
+            Method reset = factory.getMethod("resetInstance");
+            reset.invoke(singleton);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static boolean isOperitVoiceSpeaking(Context context) {
+        try {
+            Class<?> factory = Class.forName(VOICE_FACTORY);
+            Field instanceField = factory.getField("INSTANCE");
+            Object singleton = instanceField.get(null);
+
+            Method getInstance = factory.getMethod("getInstance", Context.class);
+            Object voiceService = getInstance.invoke(singleton, context);
+            if (voiceService == null) return false;
+
+            Method isSpeaking = voiceService.getClass().getMethod("isSpeaking");
+            Object value = isSpeaking.invoke(voiceService);
+            return value instanceof Boolean && (Boolean) value;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static String firstResult(Bundle results) {
+        if (results == null) return "";
+        ArrayList<String> items =
+            results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+        if (items == null || items.isEmpty()) return "";
+        String value = items.get(0);
+        return value == null ? "" : value.trim();
+    }
+
+    private static String errorName(int code) {
+        switch (code) {
+            case SpeechRecognizer.ERROR_AUDIO: return "ERROR_AUDIO";
+            case SpeechRecognizer.ERROR_CLIENT: return "ERROR_CLIENT";
+            case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS: return "ERROR_INSUFFICIENT_PERMISSIONS";
+            case SpeechRecognizer.ERROR_NETWORK: return "ERROR_NETWORK";
+            case SpeechRecognizer.ERROR_NETWORK_TIMEOUT: return "ERROR_NETWORK_TIMEOUT";
+            case SpeechRecognizer.ERROR_NO_MATCH: return "ERROR_NO_MATCH";
+            case SpeechRecognizer.ERROR_RECOGNIZER_BUSY: return "ERROR_RECOGNIZER_BUSY";
+            case SpeechRecognizer.ERROR_SERVER: return "ERROR_SERVER";
+            case SpeechRecognizer.ERROR_SPEECH_TIMEOUT: return "ERROR_SPEECH_TIMEOUT";
+            case SpeechRecognizer.ERROR_SERVER_DISCONNECTED: return "ERROR_SERVER_DISCONNECTED";
+            case SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED: return "ERROR_LANGUAGE_NOT_SUPPORTED";
+            case SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE: return "ERROR_LANGUAGE_UNAVAILABLE";
+            default: return "ERROR_" + code;
+        }
+    }
+
+    private static void increment(Context context, String key) {
+        SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        int value = p.getInt(key, 0);
+        p.edit().putInt(key, value + 1).commit();
+    }
+
+    private static void mark(Context context, String key, long value) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(key, value)
+            .commit();
+    }
+
+    private static void markString(Context context, String key, String value) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(key, value == null ? "" : value)
+            .commit();
+    }
+
+    private static void setFlag(Context context, String key, boolean value) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(key, value)
+            .commit();
+    }
+
+    private static void writeState(
+        Context context,
+        String state,
+        String text,
+        String partial,
+        int errorCode,
+        String error,
+        String lastEvent
+    ) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString("state", state == null ? "" : state)
+            .putString("lastEvent", lastEvent == null ? "" : lastEvent)
+            .putString("lastText", text == null || text.isEmpty()
+                ? context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("lastText", "")
+                : text)
+            .putString("partial", partial == null ? "" : partial)
+            .putInt("errorCode", errorCode)
+            .putString("error", error == null ? "" : error)
+            .putLong("updatedAtEpochMs", System.currentTimeMillis())
+            .commit();
+    }
+
+    private static String describe(Throwable t) {
+        if (t == null) return "";
+        String message = t.getMessage();
+        return t.getClass().getSimpleName() + (message == null ? "" : ": " + message);
+    }
+
+    private static String escape(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+}
