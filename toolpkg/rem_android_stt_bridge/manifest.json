@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "toolpkg_id": "com.rem.android_stt_bridge",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "api_version": "1.0.0",
   "main": "dist/main.js",
   "display_name": {
