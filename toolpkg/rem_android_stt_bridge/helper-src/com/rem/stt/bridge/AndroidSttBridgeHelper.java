@@ -282,7 +282,7 @@ public final class AndroidSttBridgeHelper {
 
         try {
             JSONObject o = new JSONObject();
-            o.put("probe", "W07-VOICE-SESSION");
+            o.put("probe", "W08-GLOBAL-STT");
             o.put("installed", installed);
             o.put("enabled", enabled);
             o.put("activeWakeSession", activeWakeSession);
@@ -814,7 +814,7 @@ public final class AndroidSttBridgeHelper {
                     try {
                         Toast.makeText(
                             app,
-                            "Android STT Bridge READY — можно говорить WakeWord",
+                            "Android STT Bridge READY — режим " + languageModeName(recognitionLanguage),
                             Toast.LENGTH_LONG
                         ).show();
                     } catch (Throwable ignored) {}
@@ -845,7 +845,7 @@ public final class AndroidSttBridgeHelper {
                 builder
                     .setSmallIcon(app.getApplicationInfo().icon)
                     .setContentTitle("Android STT Bridge READY")
-                    .setContentText("Русский STT готов к WakeWord • " + readyTime)
+                    .setContentText("Android STT готов • " + languageModeName(recognitionLanguage) + " • " + readyTime)
                     .setWhen(System.currentTimeMillis())
                     .setShowWhen(true)
                     .setOnlyAlertOnce(true)
