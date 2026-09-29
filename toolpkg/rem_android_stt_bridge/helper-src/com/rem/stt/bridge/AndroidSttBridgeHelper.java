@@ -64,6 +64,7 @@ public final class AndroidSttBridgeHelper {
     private static volatile boolean recognizerRunning = false;
     private static volatile boolean runtimeBusyObserved = false;
     private static volatile boolean avatarBallEnabled = true;
+    private static volatile boolean compactModeRequested = true;
     private static volatile String pendingCommandText = "";
     private static volatile long pendingCommandUntilElapsedMs = 0L;
     private static final int COMMAND_ACCUMULATOR_WINDOW_MS = 12000;
@@ -159,6 +160,7 @@ public final class AndroidSttBridgeHelper {
         final Context app = context.getApplicationContext();
 
         avatarBallEnabled = value;
+        compactModeRequested = value;
         app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putBoolean("avatarBallEnabled", value)
@@ -254,6 +256,7 @@ public final class AndroidSttBridgeHelper {
             o.put("preferOffline", true);
             o.put("systemUi", false);
             o.put("avatarBallEnabled", avatarBallEnabled);
+            o.put("compactModeRequested", compactModeRequested);
             o.put("avatarBallShown", AvatarBallController.isShown());
             o.put("avatarBallAsset", AvatarBallController.getCurrentAsset());
             o.put("pendingCommandText", pendingCommandText);
@@ -302,6 +305,7 @@ public final class AndroidSttBridgeHelper {
         activeWakeSession = true;
         waitingForAi = false;
         runtimeBusyObserved = false;
+        compactModeRequested = avatarBallEnabled;
         clearPendingCommand();
 
         increment(app, "sessionStarts");
@@ -333,6 +337,7 @@ public final class AndroidSttBridgeHelper {
         cancelAndroidRecognizer(app, true, reason);
         AvatarBallController.hide(app);
         setOperitFloatingVisible(true);
+        compactModeRequested = avatarBallEnabled;
         writeState(app, "INACTIVE", "", "", 0, "", reason);
     }
 
@@ -399,7 +404,9 @@ public final class AndroidSttBridgeHelper {
                     if (!finished.get() && isGenerationActive(generation)) {
                         writeState(app, "READY", "", lastPartial, 0, "", "READY");
                         AvatarBallController.setState(app, "LISTENING");
-                        if (avatarBallEnabled && !AvatarBallController.isShown()) {
+                        if (avatarBallEnabled &&
+                            compactModeRequested &&
+                            !AvatarBallController.isShown()) {
                             enterAvatarBall(app);
                         }
                     }
@@ -942,6 +949,7 @@ public final class AndroidSttBridgeHelper {
 
         switch (command) {
             case COLLAPSE:
+                compactModeRequested = true;
                 enterAvatarBall(app);
                 MAIN.postDelayed(
                     () -> {
@@ -954,6 +962,7 @@ public final class AndroidSttBridgeHelper {
                 break;
 
             case EXPAND:
+                compactModeRequested = false;
                 exitAvatarBall(app);
                 MAIN.postDelayed(
                     () -> {
@@ -966,6 +975,7 @@ public final class AndroidSttBridgeHelper {
                 break;
 
             case CLOSE:
+                compactModeRequested = true;
                 AvatarBallController.hide(app);
                 setOperitFloatingVisible(true);
                 activeWakeSession = false;
@@ -980,9 +990,13 @@ public final class AndroidSttBridgeHelper {
 
     private static void enterAvatarBall(Context app) {
         if (!avatarBallEnabled || !activeWakeSession) return;
+        compactModeRequested = true;
         boolean hidden = setOperitFloatingVisible(false);
         AvatarBallController.show(app, () -> {
-            MAIN.post(() -> exitAvatarBall(app));
+            MAIN.post(() -> {
+                compactModeRequested = false;
+                exitAvatarBall(app);
+            });
         });
         AvatarBallController.setState(
             app,
