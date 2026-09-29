@@ -1,7 +1,7 @@
 /* METADATA
 {
   "name": "rem_android_stt_bridge_tools",
-  "display_name": {"en": "Rem Android STT Bridge", "zh": "Rem Android STT Bridge"},
+  "display_name": {"en": "Rem Voice Session Bridge", "zh": "Rem Voice Session Bridge"},
   "description": {
     "en": "Status and control tools for the wake-launched Russian Android SpeechRecognizer bridge.",
     "zh": "Russian Android STT bridge controls."
@@ -29,6 +29,21 @@
           "type": "boolean",
           "required": true,
           "description": {"en": "true to enable, false to disable", "zh": "Enable state"}
+        }
+      ]
+    },
+    {
+      "name": "android_stt_bridge_set_avatar_ball",
+      "description": {
+        "en": "Enable or disable the animated avatar-ball mode while keeping Russian Android STT active.",
+        "zh": "Enable or disable animated avatar-ball mode."
+      },
+      "parameters": [
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "required": true,
+          "description": {"en": "true to enable avatar-ball mode, false to keep fullscreen", "zh": "Enable avatar-ball"}
         }
       ]
     },
@@ -84,13 +99,13 @@ async function android_stt_bridge_status() {
     );
     return {
       ok: true,
-      bridge: "W04-A2",
+      bridge: "W07-VOICE-SESSION",
       ...parseStatus(raw)
     };
   } catch (error) {
     return {
       ok: false,
-      bridge: "W04-A2",
+      bridge: "W07-VOICE-SESSION",
       error: String(error && error.message ? error.message : error)
     };
   }
@@ -111,13 +126,41 @@ async function android_stt_bridge_set_enabled(params) {
 
     return {
       ok: !!ok,
-      bridge: "W04-A2",
+      bridge: "W07-VOICE-SESSION",
       enabled
     };
   } catch (error) {
     return {
       ok: false,
-      bridge: "W04-A2",
+      bridge: "W07-VOICE-SESSION",
+      error: String(error && error.message ? error.message : error)
+    };
+  }
+}
+
+
+async function android_stt_bridge_set_avatar_ball(params) {
+  try {
+    await ensureLoaded();
+    const context = Java.getApplicationContext();
+    const enabled = !!(params && params.enabled);
+
+    const ok = Java.callStatic(
+      "com.rem.stt.bridge.AndroidSttBridgeHelper",
+      "setAvatarBallEnabled",
+      context,
+      enabled
+    );
+
+    return {
+      ok: !!ok,
+      bridge: "W07-VOICE-SESSION",
+      avatarBallEnabled: enabled
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      bridge: "W07-VOICE-SESSION",
       error: String(error && error.message ? error.message : error)
     };
   }
@@ -136,13 +179,13 @@ async function android_stt_bridge_probe() {
 
     return {
       ok: !!ok,
-      bridge: "W04-A2",
+      bridge: "W07-VOICE-SESSION",
       instruction: "If the current floating session was launched by WakeUpWord, the bridge will attach automatically."
     };
   } catch (error) {
     return {
       ok: false,
-      bridge: "W04-A2",
+      bridge: "W07-VOICE-SESSION",
       error: String(error && error.message ? error.message : error)
     };
   }
@@ -150,4 +193,5 @@ async function android_stt_bridge_probe() {
 
 exports.android_stt_bridge_status = android_stt_bridge_status;
 exports.android_stt_bridge_set_enabled = android_stt_bridge_set_enabled;
+exports.android_stt_bridge_set_avatar_ball = android_stt_bridge_set_avatar_ball;
 exports.android_stt_bridge_probe = android_stt_bridge_probe;
