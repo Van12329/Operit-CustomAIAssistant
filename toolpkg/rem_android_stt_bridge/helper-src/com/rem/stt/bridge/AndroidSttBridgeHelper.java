@@ -745,23 +745,29 @@ public final class AndroidSttBridgeHelper {
 
     private static LocalCommand classifyLocalCommand(String raw) {
         String text = normalizeCommand(raw);
-        if (text.startsWith("бетти ")) {
-            text = text.substring(6).trim();
-        }
 
-        if (text.equals("вернись в кристал")) {
+        // Match the command payload by suffix, not by an exact wake/name prefix.
+        // Android STT may render "Бетти" as "бети", "петти", "мети", etc.
+        // These local commands must never fall through to the AI/UI tool path.
+        if (matchesCommandSuffix(text, "вернись в кристал") ||
+            matchesCommandSuffix(text, "вернись в кристалл")) {
             return LocalCommand.CLOSE;
         }
 
-        if (text.equals("сверни панель")) {
+        if (matchesCommandSuffix(text, "скрой панель")) {
             return LocalCommand.COLLAPSE;
         }
 
-        if (text.equals("открой панель")) {
+        if (matchesCommandSuffix(text, "раскрой панель")) {
             return LocalCommand.EXPAND;
         }
 
         return LocalCommand.NONE;
+    }
+
+    private static boolean matchesCommandSuffix(String text, String command) {
+        if (text == null || command == null) return false;
+        return text.equals(command) || text.endsWith(" " + command);
     }
 
     private static String normalizeCommand(String raw) {
