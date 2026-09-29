@@ -805,26 +805,24 @@ public final class AndroidSttBridgeHelper {
         String text = normalizeCommand(raw);
         String payload = stripBettyLead(text);
 
-        if (matchesCommandSuffix(payload, "вернись в кристал") ||
-            matchesCommandSuffix(payload, "вернись в кристалл") ||
+        if (matchesCommandSuffix(payload, "вернись в кристалл") ||
+            matchesCommandSuffix(payload, "вернись в кристал") ||
             (wordCount(payload) <= 5 &&
              payload.contains("верн") &&
              payload.contains("кристал"))) {
             return LocalCommand.CLOSE;
         }
 
-        if (matchesCommandSuffix(payload, "скрой панель") ||
+        if (matchesCommandSuffix(payload, "в малую форму") ||
             (wordCount(payload) <= 4 &&
-             payload.contains("скр") &&
-             !payload.contains("раскр") &&
-             payload.contains("панел"))) {
+             payload.contains("мал") &&
+             payload.contains("форм"))) {
             return LocalCommand.COLLAPSE;
         }
 
-        if (matchesCommandSuffix(payload, "раскрой панель") ||
-            (wordCount(payload) <= 4 &&
-             payload.contains("раскр") &&
-             payload.contains("панел"))) {
+        if (matchesCommandSuffix(payload, "выходи") ||
+            (wordCount(payload) <= 2 &&
+             payload.startsWith("выход"))) {
             return LocalCommand.EXPAND;
         }
 
@@ -860,8 +858,11 @@ public final class AndroidSttBridgeHelper {
         if (hadBettyLead && payload.isEmpty()) return true;
         if (wordCount(payload) > 4) return false;
 
-        return payload.startsWith("раск") ||
-            payload.startsWith("скр") ||
+        return payload.startsWith("выход") ||
+            payload.equals("в") ||
+            payload.startsWith("в мал") ||
+            payload.contains("малую") ||
+            payload.contains("форм") ||
             payload.startsWith("вер") ||
             payload.contains("кристал");
     }
