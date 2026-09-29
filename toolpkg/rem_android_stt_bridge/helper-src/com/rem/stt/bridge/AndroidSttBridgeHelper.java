@@ -65,6 +65,9 @@ public final class AndroidSttBridgeHelper {
     private static volatile boolean runtimeBusyObserved = false;
     private static volatile boolean avatarBallEnabled = true;
     private static volatile boolean compactModeRequested = true;
+    private static volatile boolean manualOverrideEnabled = true;
+    private static volatile String recognitionLanguage = "ru-RU";
+    private static volatile String sessionKind = "NONE";
     private static volatile String pendingCommandText = "";
     private static volatile long pendingCommandUntilElapsedMs = 0L;
     private static final int COMMAND_ACCUMULATOR_WINDOW_MS = 12000;
@@ -83,9 +86,13 @@ public final class AndroidSttBridgeHelper {
             app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         enabled = bridgePrefs.getBoolean("enabled", true);
         avatarBallEnabled = bridgePrefs.getBoolean("avatarBallEnabled", true);
+        manualOverrideEnabled = bridgePrefs.getBoolean("manualOverrideEnabled", true);
+        recognitionLanguage = normalizeLanguage(
+            bridgePrefs.getString("recognitionLanguage", "ru-RU")
+        );
 
         if (installed) {
-            MAIN.post(() -> probeExistingWakeSession(app));
+            MAIN.post(() -> probeExistingVoiceSession(app));
             return true;
         }
 
@@ -131,7 +138,7 @@ public final class AndroidSttBridgeHelper {
             }
         }
 
-        MAIN.post(() -> probeExistingWakeSession(app));
+        MAIN.post(() -> probeExistingVoiceSession(app));
         return true;
     }
 
@@ -149,7 +156,7 @@ public final class AndroidSttBridgeHelper {
             if (!value) {
                 deactivate(app, "DISABLED");
             } else {
-                probeExistingWakeSession(app);
+                probeExistingVoiceSession(app);
             }
         });
         return true;
@@ -169,8 +176,51 @@ public final class AndroidSttBridgeHelper {
         MAIN.post(() -> {
             if (!value) {
                 exitAvatarBall(app);
-            } else if (activeWakeSession && recognizerRunning) {
+            } else if (activeWakeSession &&
+                       "WAKE".equals(sessionKind) &&
+                       recognizerRunning) {
                 enterAvatarBall(app);
+            }
+        });
+        return true;
+    }
+
+    public static boolean setManualOverrideEnabled(Context context, boolean value) {
+        if (context == null) return false;
+        final Context app = context.getApplicationContext();
+
+        manualOverrideEnabled = value;
+        app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("manualOverrideEnabled", value)
+            .apply();
+
+        return true;
+    }
+
+    public static boolean setLanguageMode(Context context, String mode) {
+        if (context == null) return false;
+        final Context app = context.getApplicationContext();
+
+        String normalized = normalizeLanguage(mode);
+        recognitionLanguage = normalized;
+        app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString("recognitionLanguage", normalized)
+            .apply();
+
+        MAIN.post(() -> {
+            if (activeWakeSession) {
+                final long generation = sessionGeneration;
+                cancelAndroidRecognizer(app, true, "LANGUAGE_CHANGED");
+                MAIN.postDelayed(
+                    () -> {
+                        if (isGenerationActive(generation)) {
+                            startWhenTtsIdle(app, generation, 0);
+                        }
+                    },
+                    350
+                );
             }
         });
         return true;
@@ -252,7 +302,10 @@ public final class AndroidSttBridgeHelper {
             o.put("sendFailures", p.getInt("sendFailures", 0));
             o.put("localCommands", p.getInt("localCommands", 0));
             o.put("lastLocalCommand", p.getString("lastLocalCommand", ""));
-            o.put("language", "ru-RU");
+            o.put("language", recognitionLanguage);
+            o.put("languageMode", languageModeName(recognitionLanguage));
+            o.put("manualOverrideEnabled", manualOverrideEnabled);
+            o.put("sessionKind", sessionKind);
             o.put("preferOffline", true);
             o.put("systemUi", false);
             o.put("avatarBallEnabled", avatarBallEnabled);
@@ -273,7 +326,7 @@ public final class AndroidSttBridgeHelper {
 
     public static boolean forceProbe(Context context) {
         if (context == null) return false;
-        MAIN.post(() -> probeExistingWakeSession(context.getApplicationContext()));
+        MAIN.post(() -> probeExistingVoiceSession(context.getApplicationContext()));
         return true;
     }
 
@@ -283,37 +336,50 @@ public final class AndroidSttBridgeHelper {
         boolean wakeLaunched = isWakeLaunched();
         setFlag(app, "lastWindowWakeLaunched", wakeLaunched);
 
-        if (!wakeLaunched) {
-            writeState(app, "IGNORED", "", "", 0, "", "WINDOW_NOT_WAKE_LAUNCHED");
+        if (wakeLaunched) {
+            activate(app, "WINDOW_SHOWN_WAKE", "WAKE");
             return;
         }
 
-        activate(app, "WINDOW_SHOWN_WAKE");
+        if (manualOverrideEnabled && isFloatingFullscreen()) {
+            activate(app, "WINDOW_SHOWN_MANUAL", "MANUAL");
+            return;
+        }
+
+        writeState(app, "IGNORED", "", "", 0, "", "WINDOW_NOT_VOICE_FULLSCREEN");
     }
 
-    private static void probeExistingWakeSession(Context app) {
+    private static void probeExistingVoiceSession(Context app) {
         if (!enabled) return;
+
         if (isWakeLaunched()) {
-            activate(app, "PROBE_EXISTING_WAKE");
+            activate(app, "PROBE_EXISTING_WAKE", "WAKE");
+            return;
+        }
+
+        if (manualOverrideEnabled && isFloatingFullscreen()) {
+            activate(app, "PROBE_EXISTING_MANUAL", "MANUAL");
         }
     }
 
-    private static void activate(Context app, String reason) {
+    private static void activate(Context app, String reason, String kind) {
         sessionGeneration++;
         final long generation = sessionGeneration;
 
         activeWakeSession = true;
+        sessionKind = "WAKE".equals(kind) ? "WAKE" : "MANUAL";
         waitingForAi = false;
         runtimeBusyObserved = false;
-        compactModeRequested = avatarBallEnabled;
+        compactModeRequested = "WAKE".equals(sessionKind) && avatarBallEnabled;
         clearPendingCommand();
 
         increment(app, "sessionStarts");
         mark(app, "sessionActivatedElapsedMs", SystemClock.elapsedRealtime());
+        markString(app, "sessionKind", sessionKind);
         writeState(app, "ACTIVATING", "", "", 0, "", reason);
 
-        // Let Operit's normal wake->fullscreen handoff finish first.
-        // Then shut down only its STT provider and start Android SpeechRecognizer.
+        // Let Operit's normal fullscreen voice initialization finish first.
+        // Then shut down its stock STT provider and start Android SpeechRecognizer.
         MAIN.postDelayed(() -> {
             if (!isGenerationActive(generation)) return;
 
@@ -330,6 +396,7 @@ public final class AndroidSttBridgeHelper {
     private static void deactivate(Context app, String reason) {
         sessionGeneration++;
         activeWakeSession = false;
+        sessionKind = "NONE";
         waitingForAi = false;
         runtimeBusyObserved = false;
         clearPendingCommand();
@@ -404,7 +471,8 @@ public final class AndroidSttBridgeHelper {
                     if (!finished.get() && isGenerationActive(generation)) {
                         writeState(app, "READY", "", lastPartial, 0, "", "READY");
                         AvatarBallController.setState(app, "LISTENING");
-                        if (avatarBallEnabled &&
+                        if ("WAKE".equals(sessionKind) &&
+                            avatarBallEnabled &&
                             compactModeRequested &&
                             !AvatarBallController.isShown()) {
                             enterAvatarBall(app);
@@ -484,14 +552,17 @@ public final class AndroidSttBridgeHelper {
                     writeState(app, "RESULT", text, lastPartial, 0, "", "RESULT");
 
                     String routedText = text;
-                    LocalCommand localCommand = classifyLocalCommand(routedText);
+                    LocalCommand localCommand =
+                        "WAKE".equals(sessionKind)
+                            ? classifyLocalCommand(routedText)
+                            : LocalCommand.NONE;
                     if (localCommand != LocalCommand.NONE) {
                         clearPendingCommand();
                         handleLocalCommand(app, generation, routedText, localCommand);
                         return;
                     }
 
-                    if (hasPendingCommand()) {
+                    if ("WAKE".equals(sessionKind) && hasPendingCommand()) {
                         String combined = combinePendingWith(routedText);
                         LocalCommand combinedCommand = classifyLocalCommand(combined);
                         if (combinedCommand != LocalCommand.NONE) {
@@ -521,7 +592,8 @@ public final class AndroidSttBridgeHelper {
                         // whole phrase and send the combined text to the agent.
                         routedText = combined;
                         clearPendingCommand();
-                    } else if (isCommandPrefixCandidate(routedText)) {
+                    } else if ("WAKE".equals(sessionKind) &&
+                               isCommandPrefixCandidate(routedText)) {
                         setPendingCommand(routedText);
                         writeState(
                             app,
@@ -587,8 +659,11 @@ public final class AndroidSttBridgeHelper {
                 RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                 RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
             );
-            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU");
-            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ru-RU");
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, recognitionLanguage);
+            intent.putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE,
+                recognitionLanguage
+            );
             intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
             intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
             intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
@@ -1041,6 +1116,46 @@ public final class AndroidSttBridgeHelper {
         } catch (Throwable ignored) {
             return false;
         }
+    }
+
+    private static boolean isFloatingFullscreen() {
+        try {
+            Object service = getFloatingServiceInstance();
+            if (service == null) return false;
+
+            Method getWindowState = service.getClass().getMethod("getWindowState");
+            Object windowState = getWindowState.invoke(service);
+            if (windowState == null) return false;
+
+            Method getCurrentMode = windowState.getClass().getMethod("getCurrentMode");
+            Object mutableState = getCurrentMode.invoke(windowState);
+            if (mutableState == null) return false;
+
+            Method getValue = mutableState.getClass().getMethod("getValue");
+            Object mode = getValue.invoke(mutableState);
+            return mode != null && "FULLSCREEN".equals(String.valueOf(mode));
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static String normalizeLanguage(String raw) {
+        String value = raw == null ? "" : raw.trim();
+        String upper = value.toUpperCase(Locale.ROOT);
+
+        if (upper.equals("ES") ||
+            upper.equals("ES-AR") ||
+            upper.equals("SPANISH") ||
+            upper.equals("ESPANOL") ||
+            upper.equals("ESPAÑOL")) {
+            return "es-AR";
+        }
+
+        return "ru-RU";
+    }
+
+    private static String languageModeName(String language) {
+        return "es-AR".equalsIgnoreCase(language) ? "ES" : "RU";
     }
 
     private static boolean isWakeLaunched() {
