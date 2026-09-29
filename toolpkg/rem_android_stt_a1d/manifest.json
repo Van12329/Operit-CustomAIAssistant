@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.rem.android_stt_a1d",
+  "version": "0.4.0",
+  "api_version": "1.0.0",
+  "main": "dist/main.js",
+  "display_name": {"en": "Rem Android STT A1D", "zh": "Rem Android STT A1D"},
+  "description": {"en": "Tests the default Android system SpeechRecognizer for Russian without system UI.", "zh": "Tests Android system recognizer."},
+  "enabled_by_default": true,
+  "subpackages": [{"id": "rem_android_stt_a1d", "entry": "dist/packages/rem_android_stt_a1d.js"}],
+  "resources": [{"key": "android_stt_a1d_helper", "path": "resources/android-stt-a1d-helper.dex", "mime": "application/vnd.android.dex"}]
+}
