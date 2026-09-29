@@ -1,5 +1,8 @@
 package com.rem.stt.bridge;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -14,6 +17,7 @@ import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.widget.Toast;
+import android.text.format.DateFormat;
 
 import org.json.JSONObject;
 
@@ -47,6 +51,10 @@ public final class AndroidSttBridgeHelper {
     private static final int RESTART_AFTER_RESULT_MIN_MS = 650;
     private static final int SPEAKING_POLL_MS = 180;
     private static final int SPEAKING_MAX_WAIT_MS = 30000;
+
+    private static final String READY_NOTIFICATION_CHANNEL =
+        "rem_android_stt_bridge_status";
+    private static final int READY_NOTIFICATION_ID = 0x52A2;
 
     private static volatile boolean installed = false;
     private static volatile boolean enabled = true;
@@ -101,7 +109,10 @@ public final class AndroidSttBridgeHelper {
                     app.registerReceiver(receiver, filter);
                 }
                 installed = true;
-                writeState(app, "INSTALLED", "", "", 0, "", "INSTALL");
+                mark(app, "readyElapsedMs", SystemClock.elapsedRealtime());
+                mark(app, "readyAtEpochMs", System.currentTimeMillis());
+                writeState(app, "READY", "", "", 0, "", "BRIDGE_READY");
+                showReadyNotification(app);
             } catch (Throwable t) {
                 writeState(app, "INSTALL_ERROR", "", "", -401, describe(t), "INSTALL_ERROR");
                 return false;
@@ -208,6 +219,9 @@ public final class AndroidSttBridgeHelper {
             o.put("language", "ru-RU");
             o.put("preferOffline", true);
             o.put("systemUi", false);
+            o.put("readyElapsedMs", p.getLong("readyElapsedMs", 0L));
+            o.put("readyAtEpochMs", p.getLong("readyAtEpochMs", 0L));
+            o.put("readyNotificationPosted", p.getBoolean("readyNotificationPosted", false));
             o.put("updatedAtEpochMs", p.getLong("updatedAtEpochMs", 0L));
             return o.toString();
         } catch (Throwable t) {
@@ -590,6 +604,69 @@ public final class AndroidSttBridgeHelper {
                 && !normalized.contains("error");
         } catch (Throwable ignored) {
             return false;
+        }
+    }
+
+    private static void showReadyNotification(Context app) {
+        boolean posted = false;
+        try {
+            NotificationManager nm =
+                (NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
+
+            if (nm != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    NotificationChannel channel = nm.getNotificationChannel(READY_NOTIFICATION_CHANNEL);
+                    if (channel == null) {
+                        channel = new NotificationChannel(
+                            READY_NOTIFICATION_CHANNEL,
+                            "Rem Android STT Bridge",
+                            NotificationManager.IMPORTANCE_DEFAULT
+                        );
+                        channel.setDescription("Status notifications for the Russian Android STT bridge");
+                        nm.createNotificationChannel(channel);
+                    }
+                }
+
+                String readyTime = String.valueOf(
+                    DateFormat.format("HH:mm:ss", System.currentTimeMillis())
+                );
+
+                Notification.Builder builder =
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                        ? new Notification.Builder(app, READY_NOTIFICATION_CHANNEL)
+                        : new Notification.Builder(app);
+
+                builder
+                    .setSmallIcon(app.getApplicationInfo().icon)
+                    .setContentTitle("Android STT Bridge READY")
+                    .setContentText("Русский STT готов к WakeWord • " + readyTime)
+                    .setWhen(System.currentTimeMillis())
+                    .setShowWhen(true)
+                    .setOnlyAlertOnce(true)
+                    .setAutoCancel(true);
+
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                    builder.setPriority(Notification.PRIORITY_DEFAULT);
+                }
+
+                nm.notify(READY_NOTIFICATION_ID, builder.build());
+                posted = true;
+            }
+        } catch (Throwable ignored) {
+            posted = false;
+        }
+
+        setFlag(app, "readyNotificationPosted", posted);
+
+        // Fallback for denied/disabled notification permission or channel issues.
+        if (!posted) {
+            try {
+                Toast.makeText(
+                    app,
+                    "Android STT Bridge READY — можно говорить WakeWord",
+                    Toast.LENGTH_LONG
+                ).show();
+            } catch (Throwable ignored) {}
         }
     }
 
