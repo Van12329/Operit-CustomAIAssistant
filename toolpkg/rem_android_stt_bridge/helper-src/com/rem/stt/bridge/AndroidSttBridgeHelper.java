@@ -25,7 +25,6 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Locale;
-import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class AndroidSttBridgeHelper {
@@ -52,14 +51,7 @@ public final class AndroidSttBridgeHelper {
     private static final int RESTART_AFTER_RESULT_MIN_MS = 650;
     private static final int SPEAKING_POLL_MS = 180;
     private static final int SPEAKING_MAX_WAIT_MS = 30000;
-    private static final int COMMAND_ACCUMULATOR_WINDOW_MS = 10000;
-    private static final int COMPLETE_SILENCE_MS = 3200;
-    private static final int POSSIBLY_COMPLETE_SILENCE_MS = 2200;
-    private static final int MINIMUM_UTTERANCE_MS = 9000;
-
-    private static final String RUNTIME_OWNER_KEY = "runtimeOwnerToken";
-    private static final String RUNTIME_TOKEN =
-        UUID.randomUUID().toString();
+    private static final int COMMAND_ACCUMULATOR_WINDOW_MS = 6000;
 
     private static final String READY_NOTIFICATION_CHANNEL =
         "rem_android_stt_bridge_status";
@@ -84,20 +76,10 @@ public final class AndroidSttBridgeHelper {
     public static boolean install(Context context) {
         if (context == null) return false;
         final Context app = context.getApplicationContext();
-        lastKnownContextRef = app;
-
         SharedPreferences bridgePrefs =
             app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         enabled = bridgePrefs.getBoolean("enabled", true);
         avatarBallEnabled = bridgePrefs.getBoolean("avatarBallEnabled", true);
-
-        // Process-wide lease shared through app preferences. Starting with v0.8.3,
-        // a newer helper classloader takes ownership and older compatible runtimes
-        // stop accepting STT turns.
-        bridgePrefs.edit()
-            .putString(RUNTIME_OWNER_KEY, RUNTIME_TOKEN)
-            .putLong("runtimeOwnerClaimedAtElapsedMs", SystemClock.elapsedRealtime())
-            .commit();
 
         if (installed) {
             MAIN.post(() -> probeExistingWakeSession(app));
@@ -272,8 +254,6 @@ public final class AndroidSttBridgeHelper {
             o.put("avatarBallEnabled", avatarBallEnabled);
             o.put("avatarBallShown", AvatarBallController.isShown());
             o.put("avatarBallAsset", AvatarBallController.getCurrentAsset());
-            o.put("runtimeOwner", isRuntimeOwner(context.getApplicationContext()));
-            o.put("runtimeToken", RUNTIME_TOKEN);
             o.put("pendingCommandText", pendingCommandText);
             o.put("pendingCommandUntilElapsedMs", pendingCommandUntilElapsedMs);
             o.put("readyElapsedMs", p.getLong("readyElapsedMs", 0L));
@@ -355,23 +335,7 @@ public final class AndroidSttBridgeHelper {
     }
 
     private static boolean isGenerationActive(long generation) {
-        return enabled &&
-            activeWakeSession &&
-            generation == sessionGeneration &&
-            isRuntimeOwner(lastKnownContext());
-    }
-
-    private static Context lastKnownContextRef;
-
-    private static Context lastKnownContext() {
-        return lastKnownContextRef;
-    }
-
-    private static boolean isRuntimeOwner(Context app) {
-        if (app == null) return false;
-        String owner = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(RUNTIME_OWNER_KEY, "");
-        return RUNTIME_TOKEN.equals(owner);
+        return enabled && activeWakeSession && generation == sessionGeneration;
     }
 
     private static void scheduleRestartAfterAi(Context app, int delayMs) {
@@ -628,18 +592,6 @@ public final class AndroidSttBridgeHelper {
             intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
             intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
             intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
-            intent.putExtra(
-                RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
-                COMPLETE_SILENCE_MS
-            );
-            intent.putExtra(
-                RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
-                POSSIBLY_COMPLETE_SILENCE_MS
-            );
-            intent.putExtra(
-                RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS,
-                MINIMUM_UTTERANCE_MS
-            );
 
             increment(app, "recognitionStarts");
             mark(app, "lastRecognitionStartElapsedMs", SystemClock.elapsedRealtime());
