@@ -706,6 +706,9 @@ dependencies {
     // ONNX Runtime for Android - 支持更强大的多语言Embedding模型
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.1")
 
+    // Offline Russian STT donor for WakeUpWord voice sessions
+    implementation("com.alphacephei:vosk-android:0.3.75")
+
     // Room 数据库
     implementation(libs.room.runtime)
     implementation(libs.room.ktx) // Kotlin扩展和协程支持
