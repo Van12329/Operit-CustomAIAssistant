@@ -51,7 +51,6 @@ public final class AndroidSttBridgeHelper {
     private static final int RESTART_AFTER_RESULT_MIN_MS = 650;
     private static final int SPEAKING_POLL_MS = 180;
     private static final int SPEAKING_MAX_WAIT_MS = 30000;
-    private static final int COMMAND_ACCUMULATOR_WINDOW_MS = 6000;
 
     private static final String READY_NOTIFICATION_CHANNEL =
         "rem_android_stt_bridge_status";
@@ -66,6 +65,7 @@ public final class AndroidSttBridgeHelper {
     private static volatile boolean avatarBallEnabled = true;
     private static volatile String pendingCommandText = "";
     private static volatile long pendingCommandUntilElapsedMs = 0L;
+    private static final int COMMAND_ACCUMULATOR_WINDOW_MS = 12000;
 
     private static SpeechRecognizer recognizer;
     private static long sessionGeneration = 0L;
@@ -76,6 +76,7 @@ public final class AndroidSttBridgeHelper {
     public static boolean install(Context context) {
         if (context == null) return false;
         final Context app = context.getApplicationContext();
+
         SharedPreferences bridgePrefs =
             app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         enabled = bridgePrefs.getBoolean("enabled", true);
@@ -474,42 +475,16 @@ public final class AndroidSttBridgeHelper {
                     markString(app, "lastText", text);
                     writeState(app, "RESULT", text, lastPartial, 0, "", "RESULT");
 
-                    LocalCommand localCommand = classifyLocalCommand(text);
+                    String routedText = text;
+                    LocalCommand localCommand = classifyLocalCommand(routedText);
                     if (localCommand != LocalCommand.NONE) {
                         clearPendingCommand();
-                        handleLocalCommand(app, generation, text, localCommand);
-                        return;
-                    }
-
-                    String normalizedResult = normalizeCommand(text);
-                    if (shouldAccumulateCommandFragment(normalizedResult)) {
-                        String combined = appendPendingCommand(normalizedResult);
-                        LocalCommand combinedCommand = classifyLocalCommand(combined);
-                        if (combinedCommand != LocalCommand.NONE) {
-                            clearPendingCommand();
-                            handleLocalCommand(app, generation, combined, combinedCommand);
-                            return;
-                        }
-
-                        writeState(
-                            app,
-                            "COMMAND_WAIT",
-                            combined,
-                            "",
-                            0,
-                            "",
-                            "LOCAL_COMMAND_FRAGMENT"
-                        );
-                        AvatarBallController.setState(app, "LISTENING");
-                        MAIN.postDelayed(
-                            () -> startWhenTtsIdle(app, generation, 0),
-                            140
-                        );
+                        handleLocalCommand(app, generation, routedText, localCommand);
                         return;
                     }
 
                     if (hasPendingCommand()) {
-                        String combined = appendPendingCommand(normalizedResult);
+                        String combined = combinePendingWith(routedText);
                         LocalCommand combinedCommand = classifyLocalCommand(combined);
                         if (combinedCommand != LocalCommand.NONE) {
                             clearPendingCommand();
@@ -517,9 +492,7 @@ public final class AndroidSttBridgeHelper {
                             return;
                         }
 
-                        // If the accumulated phrase still looks command-like, keep
-                        // waiting until the 10 s command window expires.
-                        if (looksCommandLike(combined) && hasPendingCommand()) {
+                        if (isCommandPrefixCandidate(combined)) {
                             writeState(
                                 app,
                                 "COMMAND_WAIT",
@@ -531,22 +504,41 @@ public final class AndroidSttBridgeHelper {
                             );
                             MAIN.postDelayed(
                                 () -> startWhenTtsIdle(app, generation, 0),
-                                140
+                                180
                             );
                             return;
                         }
 
+                        // It was not a local command after all. Preserve the user's
+                        // whole phrase and send the combined text to the agent.
+                        routedText = combined;
                         clearPendingCommand();
+                    } else if (isCommandPrefixCandidate(routedText)) {
+                        setPendingCommand(routedText);
+                        writeState(
+                            app,
+                            "COMMAND_WAIT",
+                            routedText,
+                            "",
+                            0,
+                            "",
+                            "LOCAL_COMMAND_FRAGMENT"
+                        );
+                        MAIN.postDelayed(
+                            () -> startWhenTtsIdle(app, generation, 0),
+                            180
+                        );
+                        return;
                     }
 
                     waitingForAi = true;
                     runtimeBusyObserved = false;
                     AvatarBallController.setState(app, "THINKING");
 
-                    boolean sent = sendVoiceMessageToFloating(text);
+                    boolean sent = sendVoiceMessageToFloating(routedText);
                     if (sent) {
                         increment(app, "resultsSent");
-                        writeState(app, "SENT_TO_OPERIT", text, lastPartial, 0, "", "VOICE_MESSAGE_SENT");
+                        writeState(app, "SENT_TO_OPERIT", routedText, lastPartial, 0, "", "VOICE_MESSAGE_SENT");
 
                         // The bridge is self-contained: poll FloatingChatService processing
                         // state and VoiceService speaking state, then resume Android STT.
@@ -841,8 +833,7 @@ public final class AndroidSttBridgeHelper {
     private static String stripBettyLead(String text) {
         if (text == null || text.isEmpty()) return "";
         String[] parts = text.split(" ", 2);
-        if (parts.length == 0) return text;
-        if (isBettyToken(parts[0])) {
+        if (parts.length > 0 && isBettyToken(parts[0])) {
             return parts.length > 1 ? parts[1].trim() : "";
         }
         return text;
@@ -855,51 +846,45 @@ public final class AndroidSttBridgeHelper {
             token.equals("петти") ||
             token.equals("пети") ||
             token.equals("метти") ||
-            token.equals("мети") ||
-            token.equals("бетти") ||
-            token.equals("бетти");
+            token.equals("мети");
     }
 
-    private static boolean shouldAccumulateCommandFragment(String text) {
-        if (text == null || text.isEmpty()) return false;
-        String[] parts = text.split(" ");
-        if (parts.length == 1 && isBettyToken(parts[0])) return true;
-        if (parts.length > 0 && isBettyToken(parts[0])) {
-            String payload = stripBettyLead(text);
-            return payload.isEmpty() || looksCommandLike(payload);
-        }
-        return false;
+    private static boolean isCommandPrefixCandidate(String raw) {
+        String text = normalizeCommand(raw);
+        if (text.isEmpty()) return false;
+
+        String payload = stripBettyLead(text);
+        boolean hadBettyLead = !payload.equals(text);
+
+        if (hadBettyLead && payload.isEmpty()) return true;
+        if (wordCount(payload) > 4) return false;
+
+        return payload.startsWith("раск") ||
+            payload.startsWith("скр") ||
+            payload.startsWith("вер") ||
+            payload.contains("кристал");
     }
 
-    private static boolean looksCommandLike(String text) {
-        if (text == null || text.isEmpty()) return false;
-        String n = normalizeCommand(text);
-        return n.contains("панел") ||
-            n.contains("скр") ||
-            n.contains("раскр") ||
-            n.contains("верн") ||
-            n.contains("кристал");
+    private static void setPendingCommand(String raw) {
+        pendingCommandText = normalizeCommand(raw);
+        pendingCommandUntilElapsedMs =
+            SystemClock.elapsedRealtime() + COMMAND_ACCUMULATOR_WINDOW_MS;
     }
 
-    private static String appendPendingCommand(String text) {
-        long now = SystemClock.elapsedRealtime();
-        if (pendingCommandUntilElapsedMs < now) {
-            pendingCommandText = "";
-        }
-
-        if (pendingCommandText == null || pendingCommandText.isEmpty()) {
-            pendingCommandText = text == null ? "" : text;
-        } else if (text != null && !text.isEmpty()) {
-            pendingCommandText = pendingCommandText + " " + text;
-        }
-
-        pendingCommandText = normalizeCommand(pendingCommandText);
-        pendingCommandUntilElapsedMs = now + COMMAND_ACCUMULATOR_WINDOW_MS;
+    private static String combinePendingWith(String raw) {
+        String next = normalizeCommand(raw);
+        String base = hasPendingCommand() ? pendingCommandText : "";
+        String combined = base.isEmpty() ? next : (base + " " + next);
+        pendingCommandText = normalizeCommand(combined);
+        pendingCommandUntilElapsedMs =
+            SystemClock.elapsedRealtime() + COMMAND_ACCUMULATOR_WINDOW_MS;
         return pendingCommandText;
     }
 
     private static boolean hasPendingCommand() {
-        if (pendingCommandText == null || pendingCommandText.isEmpty()) return false;
+        if (pendingCommandText == null || pendingCommandText.isEmpty()) {
+            return false;
+        }
         if (SystemClock.elapsedRealtime() > pendingCommandUntilElapsedMs) {
             clearPendingCommand();
             return false;
