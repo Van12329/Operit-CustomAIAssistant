@@ -47,27 +47,6 @@ async function onApplicationLifecycle(input) {
     return null;
 }
 
-async function onChatRuntime(input) {
-    try {
-        const payload = (input && input.eventPayload) || {};
-        if (String(payload.slot || "") !== "floating") return null;
-
-        await ensureHelper();
-        const context = Java.getApplicationContext();
-
-        Java.callStatic(
-            "com.rem.stt.bridge.AndroidSttBridgeHelper",
-            "onFloatingRuntimeState",
-            context,
-            String(payload.state || ""),
-            !!payload.isActive
-        );
-    } catch (error) {
-        console.log("[rem_android_stt_bridge] runtime hook failed: " + String(error));
-    }
-    return null;
-}
-
 function registerToolPkg() {
     ToolPkg.registerAppLifecycleHook({
         id: "rem_android_stt_bridge_on_create",
@@ -81,11 +60,6 @@ function registerToolPkg() {
         function: onApplicationLifecycle
     });
 
-    ToolPkg.registerChatRuntimeHook({
-        id: "rem_android_stt_bridge_runtime",
-        function: onChatRuntime
-    });
-
     Promise.resolve(installBridge()).catch((error) => {
         console.log("[rem_android_stt_bridge] bootstrap failed: " + String(error));
     });
@@ -95,4 +69,3 @@ function registerToolPkg() {
 
 exports.registerToolPkg = registerToolPkg;
 exports.onApplicationLifecycle = onApplicationLifecycle;
-exports.onChatRuntime = onChatRuntime;
