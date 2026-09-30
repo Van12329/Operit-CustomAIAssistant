@@ -24,6 +24,7 @@ import org.json.JSONObject;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -72,6 +73,34 @@ public final class AndroidSttBridgeHelper {
     private static SpeechRecognizer recognizer;
     private static long sessionGeneration = 0L;
     private static BroadcastReceiver receiver;
+
+    // P01 performance probe: in-memory only, no additional disk I/O in hot paths.
+    private static final Object PERF_LOCK = new Object();
+    private static final int PERF_SAMPLE_LIMIT = 24;
+    private static final ArrayDeque<Long> PERF_WINDOW_TO_READY_MS = new ArrayDeque<>();
+    private static final ArrayDeque<Long> PERF_SPEECH_END_TO_RESULT_MS = new ArrayDeque<>();
+    private static final ArrayDeque<Long> PERF_RESULT_TO_SEND_MS = new ArrayDeque<>();
+    private static final ArrayDeque<Long> PERF_SEND_TO_AI_BUSY_MS = new ArrayDeque<>();
+    private static final ArrayDeque<Long> PERF_SEND_TO_TTS_MS = new ArrayDeque<>();
+    private static final ArrayDeque<Long> PERF_SEND_TO_COMPLETE_MS = new ArrayDeque<>();
+    private static final ArrayDeque<Long> PERF_COMPLETE_TO_NEXT_READY_MS = new ArrayDeque<>();
+
+    private static volatile long perfWindowShownAt = 0L;
+    private static volatile long perfActivatedAt = 0L;
+    private static volatile long perfStockReleasedAt = 0L;
+    private static volatile long perfRecognizerStartAt = 0L;
+    private static volatile long perfReadyAt = 0L;
+    private static volatile long perfSpeechBeginAt = 0L;
+    private static volatile long perfSpeechEndAt = 0L;
+    private static volatile long perfResultAt = 0L;
+    private static volatile long perfSentAt = 0L;
+    private static volatile long perfAiBusyAt = 0L;
+    private static volatile long perfTtsSpeakingAt = 0L;
+    private static volatile long perfTurnCompleteAt = 0L;
+    private static volatile long perfNextReadyAt = 0L;
+    private static volatile boolean perfAwaitingNextReady = false;
+    private static volatile int perfSessionIndex = 0;
+    private static volatile int perfTurnIndex = 0;
 
     private AndroidSttBridgeHelper() {}
 
@@ -232,7 +261,7 @@ public final class AndroidSttBridgeHelper {
 
         try {
             JSONObject o = new JSONObject();
-            o.put("probe", "W07-VOICE-SESSION");
+            o.put("probe", "W09-P01-PERF");
             o.put("installed", installed);
             o.put("enabled", enabled);
             o.put("activeWakeSession", activeWakeSession);
@@ -265,6 +294,44 @@ public final class AndroidSttBridgeHelper {
             o.put("readyAtEpochMs", p.getLong("readyAtEpochMs", 0L));
             o.put("readyNotificationPosted", p.getBoolean("readyNotificationPosted", false));
             o.put("updatedAtEpochMs", p.getLong("updatedAtEpochMs", 0L));
+
+            JSONObject perf = new JSONObject();
+            perf.put("probeVersion", "v0.8.6-p01");
+            perf.put("sessionIndex", perfSessionIndex);
+            perf.put("turnIndex", perfTurnIndex);
+            perf.put("windowShownAt", perfWindowShownAt);
+            perf.put("activatedAt", perfActivatedAt);
+            perf.put("stockReleasedAt", perfStockReleasedAt);
+            perf.put("recognizerStartAt", perfRecognizerStartAt);
+            perf.put("readyAt", perfReadyAt);
+            perf.put("speechBeginAt", perfSpeechBeginAt);
+            perf.put("speechEndAt", perfSpeechEndAt);
+            perf.put("resultAt", perfResultAt);
+            perf.put("sentAt", perfSentAt);
+            perf.put("aiBusyAt", perfAiBusyAt);
+            perf.put("ttsSpeakingAt", perfTtsSpeakingAt);
+            perf.put("turnCompleteAt", perfTurnCompleteAt);
+            perf.put("nextReadyAt", perfNextReadyAt);
+            perf.put("windowToReadyMs", delta(perfWindowShownAt, perfReadyAt));
+            perf.put("activateToStockReleaseMs", delta(perfActivatedAt, perfStockReleasedAt));
+            perf.put("stockReleaseToRecognizerStartMs", delta(perfStockReleasedAt, perfRecognizerStartAt));
+            perf.put("recognizerStartToReadyMs", delta(perfRecognizerStartAt, perfReadyAt));
+            perf.put("speechEndToResultMs", delta(perfSpeechEndAt, perfResultAt));
+            perf.put("resultToSendMs", delta(perfResultAt, perfSentAt));
+            perf.put("sendToAiBusyMs", delta(perfSentAt, perfAiBusyAt));
+            perf.put("sendToTtsSpeakingMs", delta(perfSentAt, perfTtsSpeakingAt));
+            perf.put("sendToTurnCompleteMs", delta(perfSentAt, perfTurnCompleteAt));
+            perf.put("turnCompleteToNextReadyMs", delta(perfTurnCompleteAt, perfNextReadyAt));
+            synchronized (PERF_LOCK) {
+                perf.put("samplesWindowToReadyMs", queueToJson(PERF_WINDOW_TO_READY_MS));
+                perf.put("samplesSpeechEndToResultMs", queueToJson(PERF_SPEECH_END_TO_RESULT_MS));
+                perf.put("samplesResultToSendMs", queueToJson(PERF_RESULT_TO_SEND_MS));
+                perf.put("samplesSendToAiBusyMs", queueToJson(PERF_SEND_TO_AI_BUSY_MS));
+                perf.put("samplesSendToTtsMs", queueToJson(PERF_SEND_TO_TTS_MS));
+                perf.put("samplesSendToCompleteMs", queueToJson(PERF_SEND_TO_COMPLETE_MS));
+                perf.put("samplesCompleteToNextReadyMs", queueToJson(PERF_COMPLETE_TO_NEXT_READY_MS));
+            }
+            o.put("perf", perf);
             return o.toString();
         } catch (Throwable t) {
             return "{\"state\":\"STATUS_ERROR\",\"error\":\"" + escape(describe(t)) + "\"}";
@@ -278,6 +345,7 @@ public final class AndroidSttBridgeHelper {
     }
 
     private static void onFloatingWindowShown(Context app) {
+        perfWindowShownAt = SystemClock.elapsedRealtime();
         if (!enabled) return;
 
         boolean wakeLaunched = isWakeLaunched();
@@ -301,6 +369,20 @@ public final class AndroidSttBridgeHelper {
     private static void activate(Context app, String reason) {
         sessionGeneration++;
         final long generation = sessionGeneration;
+        perfSessionIndex++;
+        perfActivatedAt = SystemClock.elapsedRealtime();
+        perfStockReleasedAt = 0L;
+        perfRecognizerStartAt = 0L;
+        perfReadyAt = 0L;
+        perfSpeechBeginAt = 0L;
+        perfSpeechEndAt = 0L;
+        perfResultAt = 0L;
+        perfSentAt = 0L;
+        perfAiBusyAt = 0L;
+        perfTtsSpeakingAt = 0L;
+        perfTurnCompleteAt = 0L;
+        perfNextReadyAt = 0L;
+        perfAwaitingNextReady = false;
 
         activeWakeSession = true;
         waitingForAi = false;
@@ -318,6 +400,7 @@ public final class AndroidSttBridgeHelper {
             if (!isGenerationActive(generation)) return;
 
             shutdownOperitSpeechProvider(app);
+            perfStockReleasedAt = SystemClock.elapsedRealtime();
             writeState(app, "STOCK_STT_RELEASE", "", "", 0, "", "STOCK_STT_SHUTDOWN");
 
             MAIN.postDelayed(() -> {
@@ -402,6 +485,16 @@ public final class AndroidSttBridgeHelper {
                 @Override
                 public void onReadyForSpeech(Bundle params) {
                     if (!finished.get() && isGenerationActive(generation)) {
+                        long now = SystemClock.elapsedRealtime();
+                        perfReadyAt = now;
+                        if (perfWindowShownAt > 0L) {
+                            recordSample(PERF_WINDOW_TO_READY_MS, now - perfWindowShownAt);
+                        }
+                        if (perfAwaitingNextReady && perfTurnCompleteAt > 0L) {
+                            perfNextReadyAt = now;
+                            recordSample(PERF_COMPLETE_TO_NEXT_READY_MS, now - perfTurnCompleteAt);
+                            perfAwaitingNextReady = false;
+                        }
                         writeState(app, "READY", "", lastPartial, 0, "", "READY");
                         AvatarBallController.setState(app, "LISTENING");
                         if (avatarBallEnabled &&
@@ -415,6 +508,7 @@ public final class AndroidSttBridgeHelper {
                 @Override
                 public void onBeginningOfSpeech() {
                     if (!finished.get() && isGenerationActive(generation)) {
+                        perfSpeechBeginAt = SystemClock.elapsedRealtime();
                         writeState(app, "LISTENING", "", lastPartial, 0, "", "BEGINNING_OF_SPEECH");
                         AvatarBallController.setState(app, "LISTENING");
                     }
@@ -426,6 +520,7 @@ public final class AndroidSttBridgeHelper {
                 @Override
                 public void onEndOfSpeech() {
                     if (!finished.get() && isGenerationActive(generation)) {
+                        perfSpeechEndAt = SystemClock.elapsedRealtime();
                         writeState(app, "PROCESSING_STT", "", lastPartial, 0, "", "END_OF_SPEECH");
                         AvatarBallController.setState(app, "THINKING");
                     }
@@ -480,6 +575,10 @@ public final class AndroidSttBridgeHelper {
                         return;
                     }
 
+                    perfResultAt = SystemClock.elapsedRealtime();
+                    if (perfSpeechEndAt > 0L) {
+                        recordSample(PERF_SPEECH_END_TO_RESULT_MS, perfResultAt - perfSpeechEndAt);
+                    }
                     markString(app, "lastText", text);
                     writeState(app, "RESULT", text, lastPartial, 0, "", "RESULT");
 
@@ -545,6 +644,15 @@ public final class AndroidSttBridgeHelper {
 
                     boolean sent = sendVoiceMessageToFloating(routedText);
                     if (sent) {
+                        perfTurnIndex++;
+                        perfSentAt = SystemClock.elapsedRealtime();
+                        perfAiBusyAt = 0L;
+                        perfTtsSpeakingAt = 0L;
+                        perfTurnCompleteAt = 0L;
+                        perfNextReadyAt = 0L;
+                        if (perfResultAt > 0L) {
+                            recordSample(PERF_RESULT_TO_SEND_MS, perfSentAt - perfResultAt);
+                        }
                         increment(app, "resultsSent");
                         writeState(app, "SENT_TO_OPERIT", routedText, lastPartial, 0, "", "VOICE_MESSAGE_SENT");
 
@@ -596,6 +704,7 @@ public final class AndroidSttBridgeHelper {
             increment(app, "recognitionStarts");
             mark(app, "lastRecognitionStartElapsedMs", SystemClock.elapsedRealtime());
             writeState(app, "STARTING", "", "", 0, "", "START_LISTENING");
+            perfRecognizerStartAt = SystemClock.elapsedRealtime();
             recognizer.startListening(intent);
         } catch (Throwable t) {
             recognizerRunning = false;
@@ -647,6 +756,16 @@ public final class AndroidSttBridgeHelper {
         boolean aiBusy = isFloatingAiBusy();
         boolean speaking = isOperitVoiceSpeaking(app);
         boolean observed = observedActivity || aiBusy || speaking;
+        long now = SystemClock.elapsedRealtime();
+
+        if (aiBusy && perfAiBusyAt == 0L && perfSentAt > 0L) {
+            perfAiBusyAt = now;
+            recordSample(PERF_SEND_TO_AI_BUSY_MS, now - perfSentAt);
+        }
+        if (speaking && perfTtsSpeakingAt == 0L && perfSentAt > 0L) {
+            perfTtsSpeakingAt = now;
+            recordSample(PERF_SEND_TO_TTS_MS, now - perfSentAt);
+        }
 
         if (speaking) {
             AvatarBallController.setState(app, "SPEAKING");
@@ -663,6 +782,11 @@ public final class AndroidSttBridgeHelper {
         if (observed && !aiBusy && !speaking) {
             waitingForAi = false;
             runtimeBusyObserved = true;
+            perfTurnCompleteAt = now;
+            perfAwaitingNextReady = true;
+            if (perfSentAt > 0L) {
+                recordSample(PERF_SEND_TO_COMPLETE_MS, now - perfSentAt);
+            }
             writeState(app, "TURN_COMPLETE", "", "", 0, "", "AI_TTS_COMPLETE");
             AvatarBallController.setState(app, "IDLE");
 
@@ -1193,6 +1317,28 @@ public final class AndroidSttBridgeHelper {
             .putString("error", error == null ? "" : error)
             .putLong("updatedAtEpochMs", System.currentTimeMillis())
             .commit();
+    }
+
+    private static long delta(long start, long end) {
+        return (start > 0L && end >= start) ? (end - start) : -1L;
+    }
+
+    private static void recordSample(ArrayDeque<Long> queue, long value) {
+        if (value < 0L) return;
+        synchronized (PERF_LOCK) {
+            while (queue.size() >= PERF_SAMPLE_LIMIT) {
+                queue.removeFirst();
+            }
+            queue.addLast(value);
+        }
+    }
+
+    private static org.json.JSONArray queueToJson(ArrayDeque<Long> queue) {
+        org.json.JSONArray array = new org.json.JSONArray();
+        for (Long value : queue) {
+            array.put(value == null ? -1L : value.longValue());
+        }
+        return array;
     }
 
     private static String describe(Throwable t) {
