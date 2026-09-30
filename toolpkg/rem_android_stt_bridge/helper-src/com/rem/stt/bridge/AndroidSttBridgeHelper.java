@@ -95,6 +95,8 @@ public final class AndroidSttBridgeHelper {
     private static volatile long perfPrefCommitCount = 0L;
     private static volatile long perfPrefCommitTotalMs = 0L;
     private static volatile long perfPrefCommitMaxMs = 0L;
+    private static final ArrayList<JSONObject> perfHistory = new ArrayList<>();
+    private static final int PERF_HISTORY_LIMIT = 20;
     private static volatile long perfVoicePollCount = 0L;
     private static volatile long perfVoicePollTotalMs = 0L;
     private static volatile long perfVoicePollMaxMs = 0L;
@@ -332,6 +334,13 @@ public final class AndroidSttBridgeHelper {
             perf.put("prefCommitTotalMs", perfPrefCommitTotalMs);
             perf.put("prefCommitMaxMs", perfPrefCommitMaxMs);
             o.put("perf", perf);
+            synchronized (perfHistory) {
+                org.json.JSONArray history = new org.json.JSONArray();
+                for (JSONObject sample : perfHistory) {
+                    history.put(sample);
+                }
+                o.put("perfHistory", history);
+            }
 
             return o.toString();
         } catch (Throwable t) {
@@ -352,6 +361,7 @@ public final class AndroidSttBridgeHelper {
         setFlag(app, "lastWindowWakeLaunched", wakeLaunched);
 
         if (wakeLaunched) {
+            archivePerfSampleIfUseful();
             resetPerfSession();
             perfWindowShownAt = SystemClock.elapsedRealtime();
         }
@@ -1320,6 +1330,38 @@ public final class AndroidSttBridgeHelper {
             .putLong("updatedAtEpochMs", System.currentTimeMillis())
             .commit();
         recordPrefCommit(startedAt);
+    }
+
+    private static void archivePerfSampleIfUseful() {
+        if (perfWindowShownAt <= 0L || perfFirstReadyAt <= 0L) return;
+        try {
+            JSONObject sample = new JSONObject();
+            sample.put("windowShownToFirstReadyMs", deltaMs(perfWindowShownAt, perfFirstReadyAt));
+            sample.put("activateToInitialStockReleaseStartMs", deltaMs(perfActivateAt, perfInitialStockReleaseStartAt));
+            sample.put("initialStockReleaseCallMs", deltaMs(perfInitialStockReleaseStartAt, perfInitialStockReleaseEndAt));
+            sample.put("initialStockReleaseEndToRecognizerStartMs", deltaMs(perfInitialStockReleaseEndAt, perfRecognizerStartAt));
+            sample.put("recognizerCreateMs", deltaMs(perfRecognizerCreateStartAt, perfRecognizerCreatedAt));
+            sample.put("recognizerStartToFirstReadyMs", deltaMs(perfRecognizerStartAt, perfFirstReadyAt));
+            sample.put("speechEndToResultMs", deltaMs(perfSpeechEndAt, perfResultAt));
+            sample.put("resultToSendMs", deltaMs(perfResultAt, perfSendAt));
+            sample.put("sendCallMs", perfSendCallMs);
+            sample.put("sendToFirstAiBusyMs", deltaMs(perfSendAt, perfFirstAiBusyAt));
+            sample.put("sendToFirstTtsSpeakingMs", deltaMs(perfSendAt, perfFirstSpeakingAt));
+            sample.put("sendToTurnCompleteMs", deltaMs(perfSendAt, perfTurnCompleteAt));
+            sample.put("turnCompleteToNextReadyMs", deltaMs(perfTurnCompleteAt, perfNextReadyAt));
+            sample.put("recognizerCreateCount", perfRecognizerCreateCount);
+            sample.put("aiTtsPollLoops", perfAiTtsPollLoops);
+            sample.put("prefCommitCount", perfPrefCommitCount);
+            sample.put("prefCommitTotalMs", perfPrefCommitTotalMs);
+            sample.put("prefCommitMaxMs", perfPrefCommitMaxMs);
+            synchronized (perfHistory) {
+                perfHistory.add(sample);
+                while (perfHistory.size() > PERF_HISTORY_LIMIT) {
+                    perfHistory.remove(0);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     private static void resetPerfSession() {
