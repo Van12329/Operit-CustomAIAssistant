@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "toolpkg_id": "com.rem.android_stt_bridge",
-  "version": "0.8.6",
+  "version": "0.8.7",
   "api_version": "1.0.0",
   "main": "dist/main.js",
   "display_name": {
-    "en": "Rem Voice Session Bridge",
-    "zh": "Rem Voice Session Bridge"
+    "en": "Rem Voice Session Bridge Profiler",
+    "zh": "Rem Voice Session Bridge Profiler"
   },
   "description": {
     "en": "Runs Russian Android SpeechRecognizer ru-RU, local voice-session commands, and an animated avatar-ball overlay without modifying the Operit APK.",
