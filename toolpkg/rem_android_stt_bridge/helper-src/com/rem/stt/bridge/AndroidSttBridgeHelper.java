@@ -486,9 +486,11 @@ public final class AndroidSttBridgeHelper {
                 public void onReadyForSpeech(Bundle params) {
                     if (!finished.get() && isGenerationActive(generation)) {
                         long now = SystemClock.elapsedRealtime();
-                        perfReadyAt = now;
-                        if (perfWindowShownAt > 0L) {
-                            recordSample(PERF_WINDOW_TO_READY_MS, now - perfWindowShownAt);
+                        if (perfReadyAt == 0L) {
+                            perfReadyAt = now;
+                            if (perfWindowShownAt > 0L) {
+                                recordSample(PERF_WINDOW_TO_READY_MS, now - perfWindowShownAt);
+                            }
                         }
                         if (perfAwaitingNextReady && perfTurnCompleteAt > 0L) {
                             perfNextReadyAt = now;
