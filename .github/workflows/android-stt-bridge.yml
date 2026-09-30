@@ -3,7 +3,7 @@ name: Build Rem Voice Session Bridge PERF
 on:
   push:
     branches:
-      - feature/android-stt-toolpkg-probe
+      - feature/voice-performance-v086
     paths:
       - .github/workflows/android-stt-bridge.yml
       - toolpkg/rem_android_stt_bridge/**
