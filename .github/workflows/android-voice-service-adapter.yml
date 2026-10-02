@@ -3,7 +3,7 @@ name: Build Android VoiceService Adapter
 on:
   push:
     branches:
-      - feature/android-voice-service-adapter-010
+      - feature/android-voice-service-adapter-011
     paths:
       - .github/workflows/android-voice-service-adapter.yml
       - toolpkg/android_voice_service_adapter/**
@@ -48,13 +48,13 @@ jobs:
         run: |
           set -euo pipefail
           ROOT="toolpkg/android_voice_service_adapter"
-          OUT="Android-VoiceService-Adapter-v0.1.0.toolpkg"
+          OUT="Android-VoiceService-Adapter-v0.1.1.toolpkg"
           (cd "$ROOT" && zip -qr "$GITHUB_WORKSPACE/$OUT" manifest.json dist resources/android-voice-service-adapter-helper.dex)
           unzip -l "$OUT"
           sha256sum "$OUT"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: Android-VoiceService-Adapter-v0.1.0
-          path: Android-VoiceService-Adapter-v0.1.0.toolpkg
+          name: Android-VoiceService-Adapter-v0.1.1
+          path: Android-VoiceService-Adapter-v0.1.1.toolpkg
           if-no-files-found: error
           retention-days: 14
