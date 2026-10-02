@@ -6,6 +6,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.speech.ModelDownloadListener;
 import android.speech.RecognitionListener;
 import android.speech.RecognitionSupport;
 import android.speech.RecognitionSupportCallback;
@@ -77,6 +78,15 @@ public final class AndroidSpeechServiceInjector {
     private static AndroidSpeechHandler handler;
     private static boolean installed;
     private static String installError = "";
+
+    // API 34+ observable model-download state.
+    private static SpeechRecognizer modelDownloadRecognizer;
+    private static String modelDownloadLanguage = "";
+    private static String modelDownloadState = "IDLE";
+    private static int modelDownloadProgress = -1;
+    private static int modelDownloadErrorCode = 0;
+    private static String modelDownloadErrorName = "";
+    private static long modelDownloadUpdatedAtMs = 0L;
 
     private AndroidSpeechServiceInjector() {}
 
@@ -173,6 +183,12 @@ public final class AndroidSpeechServiceInjector {
                     instanceField.set(null, originalInstance);
                     profileField.set(null, originalProfileId);
                 }
+            } catch (Throwable ignored) {
+                ok = false;
+            }
+
+            try {
+                destroyModelDownloadRecognizerOnMain();
             } catch (Throwable ignored) {
                 ok = false;
             }
@@ -374,11 +390,10 @@ public final class AndroidSpeechServiceInjector {
 
     public static String requestModelDownloadJson(Context context, String requested) {
         JSONObject out = new JSONObject();
-        SpeechRecognizer probe = null;
 
         try {
-            Context a = context.getApplicationContext();
-            String language = normalizeLanguage(requested);
+            final Context a = context.getApplicationContext();
+            final String language = normalizeLanguage(requested);
             if (language == null) {
                 out.put("ok", false);
                 out.put("error", "Unsupported adapter locale: " + String.valueOf(requested));
@@ -395,6 +410,103 @@ public final class AndroidSpeechServiceInjector {
                 return out.toString();
             }
 
+            synchronized (LOCK) {
+                if ("DOWNLOADING".equals(modelDownloadState)
+                    || "REQUESTED".equals(modelDownloadState)) {
+                    out.put("ok", false);
+                    out.put("error", "A model download request is already active.");
+                    appendModelDownloadStatus(out);
+                    return out.toString();
+                }
+            }
+
+            final Intent intent = buildRecognitionIntent(language, true, false);
+
+            if (Build.VERSION.SDK_INT >= 34) {
+                runOnMainSync(
+                    new MainCallable<Boolean>() {
+                        @Override
+                        public Boolean call() {
+                            destroyModelDownloadRecognizerOnMain();
+
+                            modelDownloadRecognizer =
+                                SpeechRecognizer.createSpeechRecognizer(a);
+                            modelDownloadLanguage = language;
+                            modelDownloadState = "REQUESTED";
+                            modelDownloadProgress = -1;
+                            modelDownloadErrorCode = 0;
+                            modelDownloadErrorName = "";
+                            modelDownloadUpdatedAtMs = System.currentTimeMillis();
+
+                            final SpeechRecognizer active = modelDownloadRecognizer;
+                            active.triggerModelDownload(
+                                intent,
+                                a.getMainExecutor(),
+                                new ModelDownloadListener() {
+                                    @Override
+                                    public void onProgress(int completedPercent) {
+                                        synchronized (LOCK) {
+                                            modelDownloadState = "DOWNLOADING";
+                                            modelDownloadProgress = completedPercent;
+                                            modelDownloadUpdatedAtMs =
+                                                System.currentTimeMillis();
+                                        }
+                                    }
+
+                                    @Override
+                                    public void onScheduled() {
+                                        synchronized (LOCK) {
+                                            modelDownloadState = "SCHEDULED";
+                                            modelDownloadUpdatedAtMs =
+                                                System.currentTimeMillis();
+                                        }
+                                        destroyModelDownloadRecognizerOnMain();
+                                    }
+
+                                    @Override
+                                    public void onSuccess() {
+                                        synchronized (LOCK) {
+                                            modelDownloadState = "SUCCESS";
+                                            modelDownloadProgress = 100;
+                                            modelDownloadErrorCode = 0;
+                                            modelDownloadErrorName = "";
+                                            modelDownloadUpdatedAtMs =
+                                                System.currentTimeMillis();
+                                        }
+                                        destroyModelDownloadRecognizerOnMain();
+                                    }
+
+                                    @Override
+                                    public void onError(int error) {
+                                        synchronized (LOCK) {
+                                            modelDownloadState = "ERROR";
+                                            modelDownloadErrorCode = error;
+                                            modelDownloadErrorName =
+                                                recognitionErrorName(error);
+                                            modelDownloadUpdatedAtMs =
+                                                System.currentTimeMillis();
+                                        }
+                                        destroyModelDownloadRecognizerOnMain();
+                                    }
+                                }
+                            );
+                            return Boolean.TRUE;
+                        }
+                    },
+                    2500L
+                );
+
+                out.put("ok", true);
+                out.put("listenerEnabled", true);
+                appendModelDownloadStatus(out);
+                out.put(
+                    "nextStep",
+                    "Call android_speech_service_model_download_status to read progress/success/error."
+                );
+                return out.toString();
+            }
+
+            // Android 13 fallback: the old API is fire-and-forget.
             final SpeechRecognizer created =
                 runOnMainSync(
                     new MainCallable<SpeechRecognizer>() {
@@ -405,52 +517,91 @@ public final class AndroidSpeechServiceInjector {
                     },
                     2500L
                 );
-            probe = created;
-            final Intent intent = buildRecognitionIntent(language, true, false);
 
-            runOnMainSync(
-                new MainCallable<Boolean>() {
-                    @Override
-                    public Boolean call() {
-                        created.triggerModelDownload(intent);
-                        return Boolean.TRUE;
-                    }
-                },
-                2500L
-            );
+            try {
+                runOnMainSync(
+                    new MainCallable<Boolean>() {
+                        @Override
+                        public Boolean call() {
+                            created.triggerModelDownload(intent);
+                            return Boolean.TRUE;
+                        }
+                    },
+                    2500L
+                );
+            } finally {
+                runOnMainSync(
+                    new MainCallable<Boolean>() {
+                        @Override
+                        public Boolean call() {
+                            created.destroy();
+                            return Boolean.TRUE;
+                        }
+                    },
+                    2500L
+                );
+            }
+
+            synchronized (LOCK) {
+                modelDownloadLanguage = language;
+                modelDownloadState = "REQUESTED_UNOBSERVED";
+                modelDownloadProgress = -1;
+                modelDownloadErrorCode = 0;
+                modelDownloadErrorName = "";
+                modelDownloadUpdatedAtMs = System.currentTimeMillis();
+            }
 
             out.put("ok", true);
-            out.put("requested", true);
-            out.put(
-                "nextStep",
-                "Re-run android_speech_service_check_support after any download/prompt completes."
-            );
+            out.put("listenerEnabled", false);
+            appendModelDownloadStatus(out);
+        } catch (Throwable t) {
+            try {
+                out.put("ok", false);
+                out.put("error", describe(t));
+                appendModelDownloadStatus(out);
+            } catch (Throwable ignored) {
+            }
+        }
+
+        return out.toString();
+    }
+
+    public static String getModelDownloadStatusJson(Context context) {
+        JSONObject out = new JSONObject();
+        try {
+            out.put("ok", true);
+            out.put("apiLevel", Build.VERSION.SDK_INT);
+            appendModelDownloadStatus(out);
         } catch (Throwable t) {
             try {
                 out.put("ok", false);
                 out.put("error", describe(t));
             } catch (Throwable ignored) {
             }
-        } finally {
-            final SpeechRecognizer toDestroy = probe;
-            if (toDestroy != null) {
-                try {
-                    runOnMainSync(
-                        new MainCallable<Boolean>() {
-                            @Override
-                            public Boolean call() {
-                                toDestroy.destroy();
-                                return Boolean.TRUE;
-                            }
-                        },
-                        2500L
-                    );
-                } catch (Throwable ignored) {
-                }
+        }
+        return out.toString();
+    }
+
+    private static void appendModelDownloadStatus(JSONObject out) throws Exception {
+        synchronized (LOCK) {
+            out.put("language", modelDownloadLanguage);
+            out.put("state", modelDownloadState);
+            out.put("progressPercent", modelDownloadProgress);
+            out.put("errorCode", modelDownloadErrorCode);
+            out.put("errorName", modelDownloadErrorName);
+            out.put("updatedAtEpochMs", modelDownloadUpdatedAtMs);
+        }
+    }
+
+    private static void destroyModelDownloadRecognizerOnMain() {
+        SpeechRecognizer current = modelDownloadRecognizer;
+        modelDownloadRecognizer = null;
+        if (current != null) {
+            try {
+                current.destroy();
+            } catch (Throwable ignored) {
             }
         }
-
-        return out.toString();
     }
 
     private static Intent buildRecognitionIntent(
@@ -497,6 +648,8 @@ public final class AndroidSpeechServiceInjector {
                 return "ERROR_LANGUAGE_NOT_SUPPORTED";
             case SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE:
                 return "ERROR_LANGUAGE_UNAVAILABLE";
+            case SpeechRecognizer.ERROR_CANNOT_CHECK_SUPPORT:
+                return "ERROR_CANNOT_CHECK_SUPPORT";
             default: return "ERROR_" + code;
         }
     }
