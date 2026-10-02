@@ -1,9 +1,9 @@
-name: Build Rem Voice Session Bridge
+name: Build Rem Voice Session Bridge OPT1
 
 on:
   push:
     branches:
-      - feature/android-stt-toolpkg-probe
+      - feature/voice-performance-v086-opt1
     paths:
       - .github/workflows/android-stt-bridge.yml
       - toolpkg/rem_android_stt_bridge/**
@@ -48,12 +48,12 @@ jobs:
         run: |
           set -euo pipefail
           ROOT="toolpkg/rem_android_stt_bridge"
-          OUT="Rem-Voice-Session-Bridge-v0.8.6.toolpkg"
+          OUT="Rem-Voice-Session-Bridge-v0.8.6-opt1.toolpkg"
           (cd "$ROOT" && zip -qr "$GITHUB_WORKSPACE/$OUT" manifest.json dist resources/android-stt-bridge-helper.dex)
           unzip -l "$OUT"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: Rem-Voice-Session-Bridge-v0.8.6
-          path: Rem-Voice-Session-Bridge-v0.8.6.toolpkg
+          name: Rem-Voice-Session-Bridge-v0.8.6-opt1
+          path: Rem-Voice-Session-Bridge-v0.8.6-opt1.toolpkg
           if-no-files-found: error
           retention-days: 14
