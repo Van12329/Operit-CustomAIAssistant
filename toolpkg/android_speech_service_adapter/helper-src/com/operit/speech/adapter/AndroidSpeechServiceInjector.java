@@ -68,6 +68,13 @@ public final class AndroidSpeechServiceInjector {
     private static final long CONTINUATION_HOLD_MS = 1600L;
     private static final long KEEPALIVE_MIN_INTERVAL_MS = 500L;
 
+    private static final String VOICE_FACTORY =
+        "com.ai.assistance.operit.api.voice.VoiceServiceFactory";
+    private static final long TTS_GATE_POLL_MS = 50L;
+    private static final long TTS_GATE_RACE_GUARD_MS = 120L;
+    private static final long TTS_GATE_IDLE_TAIL_MS = 120L;
+    private static final long TTS_GATE_MAX_WAIT_MS = 15_000L;
+
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final Object LOCK = new Object();
     private static final Executor DIRECT_EXECUTOR =
@@ -1232,6 +1239,21 @@ public final class AndroidSpeechServiceInjector {
         private boolean activePartialResults;
         private final StringBuilder turnBuffer = new StringBuilder();
 
+        private long ttsGateGeneration;
+        private boolean ttsGateWaiting;
+        private boolean ttsGateObservedSpeaking;
+        private long ttsGateStartedAtMs;
+        private long ttsGateIdleSinceMs;
+        private Object ttsGateVoiceService;
+        private long ttsGateChecks;
+        private long ttsGateDeferrals;
+        private long ttsGateObservedSpeakingCount;
+        private long ttsGateTimeouts;
+        private long ttsGateStartCount;
+        private long ttsGateTotalWaitMs;
+        private long ttsGateMaxWaitMs;
+        private long lastTtsGateWaitMs;
+
         private boolean suppressExpectedClientError;
         private long suppressClientErrorGeneration;
         private long suppressedExpectedClientErrors;
@@ -1412,7 +1434,7 @@ public final class AndroidSpeechServiceInjector {
                         recognizing = false;
                     }
 
-                    startRecognizerSessionOnMain(false);
+                    beginInitialRecognizerStartWithTtsGateOnMain();
                     recognitionStarts++;
                     return Boolean.TRUE;
                 }, 2500L);
@@ -1421,6 +1443,203 @@ public final class AndroidSpeechServiceInjector {
                 recognizing = false;
                 publishError(-1002, describe(t));
                 return false;
+            }
+        }
+
+        private void beginInitialRecognizerStartWithTtsGateOnMain() throws Exception {
+            final long generation = ++ttsGateGeneration;
+
+            ttsGateWaiting = true;
+            ttsGateObservedSpeaking = false;
+            ttsGateStartedAtMs = SystemClock.elapsedRealtime();
+            ttsGateIdleSinceMs = 0L;
+            ttsGateVoiceService = getCurrentVoiceServiceQuiet();
+
+            checkTtsGateAndStart(generation);
+        }
+
+        private void checkTtsGateAndStart(final long generation) throws Exception {
+            if (!allowContinuation || generation != ttsGateGeneration) {
+                ttsGateWaiting = false;
+                return;
+            }
+
+            final long now = SystemClock.elapsedRealtime();
+            final long waited = now - ttsGateStartedAtMs;
+            ttsGateChecks++;
+
+            VoiceActivityState voice = readVoiceActivityState(ttsGateVoiceService);
+
+            if (voice.speaking) {
+                if (!ttsGateObservedSpeaking) {
+                    ttsGateObservedSpeaking = true;
+                    ttsGateObservedSpeakingCount++;
+                }
+                ttsGateIdleSinceMs = 0L;
+                ttsGateDeferrals++;
+                scheduleTtsGateCheck(generation);
+                return;
+            }
+
+            if (!voice.initialized && waited < TTS_GATE_RACE_GUARD_MS) {
+                ttsGateDeferrals++;
+                scheduleTtsGateCheck(generation);
+                return;
+            }
+
+            if (!ttsGateObservedSpeaking && waited < TTS_GATE_RACE_GUARD_MS) {
+                // The wake greeting is queued immediately before startRecognition().
+                // Give its coroutine a tiny window to mark VoiceService as speaking.
+                ttsGateDeferrals++;
+                scheduleTtsGateCheck(generation);
+                return;
+            }
+
+            if (ttsGateObservedSpeaking) {
+                if (ttsGateIdleSinceMs == 0L) {
+                    ttsGateIdleSinceMs = now;
+                    ttsGateDeferrals++;
+                    scheduleTtsGateCheck(generation);
+                    return;
+                }
+
+                if (now - ttsGateIdleSinceMs < TTS_GATE_IDLE_TAIL_MS) {
+                    ttsGateDeferrals++;
+                    scheduleTtsGateCheck(generation);
+                    return;
+                }
+            }
+
+            if (waited >= TTS_GATE_MAX_WAIT_MS) {
+                ttsGateTimeouts++;
+            }
+
+            ttsGateWaiting = false;
+            lastTtsGateWaitMs = waited;
+            ttsGateTotalWaitMs += waited;
+            if (waited > ttsGateMaxWaitMs) ttsGateMaxWaitMs = waited;
+            ttsGateStartCount++;
+
+            startRecognizerSessionOnMain(false);
+        }
+
+        private void scheduleTtsGateCheck(final long generation) {
+            final long now = SystemClock.elapsedRealtime();
+            final long waited = now - ttsGateStartedAtMs;
+
+            if (waited >= TTS_GATE_MAX_WAIT_MS) {
+                try {
+                    ttsGateTimeouts++;
+                    ttsGateWaiting = false;
+                    lastTtsGateWaitMs = waited;
+                    ttsGateTotalWaitMs += waited;
+                    if (waited > ttsGateMaxWaitMs) ttsGateMaxWaitMs = waited;
+                    ttsGateStartCount++;
+                    startRecognizerSessionOnMain(false);
+                } catch (Throwable t) {
+                    recognizing = false;
+                    publishError(-1006, describe(t));
+                }
+                return;
+            }
+
+            MAIN.postDelayed(
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            checkTtsGateAndStart(generation);
+                        } catch (Throwable t) {
+                            ttsGateWaiting = false;
+                            recognizing = false;
+                            publishError(-1006, describe(t));
+                        }
+                    }
+                },
+                TTS_GATE_POLL_MS
+            );
+        }
+
+        private Object getCurrentVoiceServiceQuiet() {
+            try {
+                Class<?> factoryClass = Class.forName(VOICE_FACTORY, false, cl);
+                Field voiceInstanceField = factoryClass.getDeclaredField("instance");
+                voiceInstanceField.setAccessible(true);
+
+                Object current = voiceInstanceField.get(null);
+                if (current != null) return current;
+
+                Object singleton = factoryClass.getField("INSTANCE").get(null);
+                Method getInstance =
+                    factoryClass.getMethod("getInstance", Context.class);
+                return getInstance.invoke(singleton, app);
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+
+        private VoiceActivityState readVoiceActivityState(Object voiceService) {
+            if (voiceService == null) {
+                return new VoiceActivityState(true, false);
+            }
+
+            boolean initialized =
+                readBooleanNoArgs(
+                    voiceService,
+                    true,
+                    "isInitialized",
+                    "getIsInitialized"
+                );
+            boolean speaking =
+                readBooleanNoArgs(
+                    voiceService,
+                    false,
+                    "isSpeaking",
+                    "getIsSpeaking"
+                );
+
+            return new VoiceActivityState(initialized, speaking);
+        }
+
+        private boolean readBooleanNoArgs(
+            Object target,
+            boolean fallback,
+            String... names
+        ) {
+            if (target == null) return fallback;
+
+            for (String name : names) {
+                try {
+                    Method m = target.getClass().getMethod(name);
+                    m.setAccessible(true);
+                    Object value = m.invoke(target);
+                    if (value instanceof Boolean) {
+                        return ((Boolean) value).booleanValue();
+                    }
+                } catch (Throwable ignored) {
+                }
+
+                try {
+                    Method m = target.getClass().getDeclaredMethod(name);
+                    m.setAccessible(true);
+                    Object value = m.invoke(target);
+                    if (value instanceof Boolean) {
+                        return ((Boolean) value).booleanValue();
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+
+            return fallback;
+        }
+
+        private static final class VoiceActivityState {
+            final boolean initialized;
+            final boolean speaking;
+
+            VoiceActivityState(boolean initialized, boolean speaking) {
+                this.initialized = initialized;
+                this.speaking = speaking;
             }
         }
 
@@ -1575,6 +1794,8 @@ public final class AndroidSpeechServiceInjector {
             continuationArmed = false;
             continuationSpeechActive = false;
             continuationGeneration++;
+            ttsGateWaiting = false;
+            ttsGateGeneration++;
 
             try {
                 Boolean ok = runOnMainSync(() -> {
@@ -1596,6 +1817,8 @@ public final class AndroidSpeechServiceInjector {
             continuationArmed = false;
             continuationSpeechActive = false;
             continuationGeneration++;
+            ttsGateWaiting = false;
+            ttsGateGeneration++;
             turnBuffer.setLength(0);
 
             try {
@@ -1619,6 +1842,8 @@ public final class AndroidSpeechServiceInjector {
             continuationArmed = false;
             continuationSpeechActive = false;
             continuationGeneration++;
+            ttsGateWaiting = false;
+            ttsGateGeneration++;
             turnBuffer.setLength(0);
 
             try {
@@ -1677,6 +1902,18 @@ public final class AndroidSpeechServiceInjector {
             o.put("androidStartListeningCalls", androidStartListeningCalls);
             o.put("continuationEnabled", true);
             o.put("continuationHoldMs", CONTINUATION_HOLD_MS);
+            o.put("ttsDuplexGateEnabled", true);
+            o.put("ttsGateWaiting", ttsGateWaiting);
+            o.put("ttsGateRaceGuardMs", TTS_GATE_RACE_GUARD_MS);
+            o.put("ttsGateIdleTailMs", TTS_GATE_IDLE_TAIL_MS);
+            o.put("ttsGateChecks", ttsGateChecks);
+            o.put("ttsGateDeferrals", ttsGateDeferrals);
+            o.put("ttsGateObservedSpeakingCount", ttsGateObservedSpeakingCount);
+            o.put("ttsGateTimeouts", ttsGateTimeouts);
+            o.put("ttsGateStartCount", ttsGateStartCount);
+            o.put("lastTtsGateWaitMs", lastTtsGateWaitMs);
+            o.put("ttsGateTotalWaitMs", ttsGateTotalWaitMs);
+            o.put("ttsGateMaxWaitMs", ttsGateMaxWaitMs);
             o.put("continuationRestartDelayMs", CONTINUATION_RESTART_DELAY_MS);
             o.put("continuationRestarts", continuationRestarts);
             o.put("continuationBegins", continuationBegins);
@@ -1826,6 +2063,8 @@ public final class AndroidSpeechServiceInjector {
                         if (!text.isEmpty()) {
                             String cumulative = appendStableSegment(text);
                             lastFinalText = cumulative;
+                            lastErrorCode = 0;
+                            lastErrorMessage = "";
                             finalResults++;
                             setFlowQuiet(
                                 resultFlow,
