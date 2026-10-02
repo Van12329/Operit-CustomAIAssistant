@@ -2,6 +2,9 @@ package com.operit.voice.adapter;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import java.lang.reflect.*;
 import java.util.ArrayDeque;
 import org.json.JSONArray;
@@ -13,6 +16,26 @@ public final class AndroidVoiceServiceInjector {
     private static final String SPEECH_PREFS = "operit_android_speech_service_adapter";
     private static final String SPEECH_LANGUAGE_KEY = "language";
     private static final String DEFAULT_SPEECH_LANGUAGE = "ru-RU";
+
+    // Cross-ToolPkg in-process coordination. SharedPreferences.apply() updates the
+    // in-memory map synchronously, while persistence happens asynchronously.
+    private static final String DUPLEX_PREFS = "operit_voice_duplex_coordination";
+    private static final String DUPLEX_KEY_SEQ = "tts_seq";
+    private static final String DUPLEX_KEY_STATE = "tts_state";
+    private static final String DUPLEX_KEY_REQUEST_AT = "tts_request_at_elapsed";
+    private static final String DUPLEX_KEY_STATE_AT = "tts_state_at_elapsed";
+    private static final String DUPLEX_KEY_PREVIEW = "tts_text_preview";
+
+    private static final String DUPLEX_STATE_IDLE = "IDLE";
+    private static final String DUPLEX_STATE_REQUESTED = "REQUESTED";
+    private static final String DUPLEX_STATE_SPEAKING = "SPEAKING";
+    private static final String DUPLEX_STATE_COMPLETED = "COMPLETED";
+    private static final String DUPLEX_STATE_FAILED = "FAILED";
+    private static final String DUPLEX_STATE_START_TIMEOUT = "START_TIMEOUT";
+
+    private static final long DUPLEX_POLL_MS = 60L;
+    private static final long DUPLEX_START_TIMEOUT_MS = 6000L;
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private static Context appContext;
     private static Object factorySingleton;
@@ -39,6 +62,17 @@ public final class AndroidVoiceServiceInjector {
     private static long passthroughSpeakCount;
     private static long sanitizedSpeakCount;
     private static long removedMarkdownTokenCount;
+
+    private static long duplexSequence;
+    private static long duplexRequestCount;
+    private static long duplexSpeakingObservedCount;
+    private static long duplexCompletedCount;
+    private static long duplexFailedCount;
+    private static long duplexStartTimeoutCount;
+    private static long lastDuplexRequestAtElapsed;
+    private static long lastDuplexStateAtElapsed;
+    private static String lastDuplexState = DUPLEX_STATE_IDLE;
+    private static String lastDuplexTextPreview = "";
 
     private static String lastConfiguredSpeechLanguage = "";
     private static String lastRoute = "";
@@ -111,19 +145,48 @@ public final class AndroidVoiceServiceInjector {
                                 return args != null && args.length == 1 && proxy == args[0];
                             }
 
+                            long duplexSeq = -1L;
                             if ("speak".equals(name) && args != null && args.length > 0) {
                                 String rawText = args[0] == null ? "" : String.valueOf(args[0]);
                                 String preparedText = prepareTextBeforeSpeak(delegate, rawText);
                                 args[0] = preparedText;
+                                duplexSeq = markDuplexRequested(preparedText);
+                                scheduleDuplexMonitor(delegate, duplexSeq);
                             }
 
                             try {
                                 method.setAccessible(true);
-                                return method.invoke(delegate, args);
+                                Object result = method.invoke(delegate, args);
+
+                                if (duplexSeq > 0L && result instanceof Boolean
+                                    && !((Boolean) result).booleanValue()) {
+                                    markDuplexTerminal(
+                                        duplexSeq,
+                                        DUPLEX_STATE_FAILED,
+                                        false
+                                    );
+                                }
+                                return result;
                             } catch (InvocationTargetException ite) {
+                                if (duplexSeq > 0L) {
+                                    markDuplexTerminal(
+                                        duplexSeq,
+                                        DUPLEX_STATE_FAILED,
+                                        false
+                                    );
+                                }
                                 Throwable cause = ite.getCause();
                                 if (cause != null) throw cause;
                                 throw ite;
+                            } catch (Throwable t) {
+                                if (duplexSeq > 0L) {
+                                    markDuplexTerminal(
+                                        duplexSeq,
+                                        DUPLEX_STATE_FAILED,
+                                        false
+                                    );
+                                }
+                                throw t;
                             }
                         }
                     }
@@ -141,6 +204,180 @@ public final class AndroidVoiceServiceInjector {
                 return false;
             }
         }
+    }
+
+    private static long markDuplexRequested(String text) {
+        synchronized (LOCK) {
+            long seq = ++duplexSequence;
+            long now = SystemClock.elapsedRealtime();
+
+            duplexRequestCount++;
+            lastDuplexRequestAtElapsed = now;
+            lastDuplexStateAtElapsed = now;
+            lastDuplexState = DUPLEX_STATE_REQUESTED;
+            lastDuplexTextPreview = preview(text);
+
+            writeDuplexState(
+                seq,
+                DUPLEX_STATE_REQUESTED,
+                now,
+                now,
+                lastDuplexTextPreview
+            );
+            return seq;
+        }
+    }
+
+    private static void scheduleDuplexMonitor(
+        final Object delegate,
+        final long seq
+    ) {
+        final long startedAt = SystemClock.elapsedRealtime();
+
+        MAIN.post(
+            new Runnable() {
+                private boolean observedSpeaking = false;
+
+                @Override
+                public void run() {
+                    synchronized (LOCK) {
+                        if (seq != duplexSequence) {
+                            return;
+                        }
+
+                        long now = SystemClock.elapsedRealtime();
+                        boolean speaking =
+                            readBooleanNoArgs(
+                                delegate,
+                                false,
+                                "isSpeaking",
+                                "getIsSpeaking"
+                            );
+
+                        if (speaking) {
+                            if (!observedSpeaking) {
+                                observedSpeaking = true;
+                                duplexSpeakingObservedCount++;
+                                lastDuplexState = DUPLEX_STATE_SPEAKING;
+                                lastDuplexStateAtElapsed = now;
+                                writeDuplexState(
+                                    seq,
+                                    DUPLEX_STATE_SPEAKING,
+                                    lastDuplexRequestAtElapsed,
+                                    now,
+                                    lastDuplexTextPreview
+                                );
+                            }
+
+                            MAIN.postDelayed(this, DUPLEX_POLL_MS);
+                            return;
+                        }
+
+                        if (observedSpeaking) {
+                            markDuplexTerminal(
+                                seq,
+                                DUPLEX_STATE_COMPLETED,
+                                true
+                            );
+                            return;
+                        }
+
+                        if (now - startedAt >= DUPLEX_START_TIMEOUT_MS) {
+                            markDuplexTerminal(
+                                seq,
+                                DUPLEX_STATE_START_TIMEOUT,
+                                false
+                            );
+                            return;
+                        }
+
+                        MAIN.postDelayed(this, DUPLEX_POLL_MS);
+                    }
+                }
+            }
+        );
+    }
+
+    private static void markDuplexTerminal(
+        long seq,
+        String state,
+        boolean completedNormally
+    ) {
+        synchronized (LOCK) {
+            if (seq != duplexSequence) return;
+
+            long now = SystemClock.elapsedRealtime();
+            lastDuplexState = state;
+            lastDuplexStateAtElapsed = now;
+
+            if (completedNormally) {
+                duplexCompletedCount++;
+            } else if (DUPLEX_STATE_START_TIMEOUT.equals(state)) {
+                duplexStartTimeoutCount++;
+            } else {
+                duplexFailedCount++;
+            }
+
+            writeDuplexState(
+                seq,
+                state,
+                lastDuplexRequestAtElapsed,
+                now,
+                lastDuplexTextPreview
+            );
+        }
+    }
+
+    private static void writeDuplexState(
+        long seq,
+        String state,
+        long requestAt,
+        long stateAt,
+        String preview
+    ) {
+        Context app = appContext;
+        if (app == null) return;
+
+        app.getSharedPreferences(DUPLEX_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(DUPLEX_KEY_SEQ, seq)
+            .putString(DUPLEX_KEY_STATE, state)
+            .putLong(DUPLEX_KEY_REQUEST_AT, requestAt)
+            .putLong(DUPLEX_KEY_STATE_AT, stateAt)
+            .putString(DUPLEX_KEY_PREVIEW, preview == null ? "" : preview)
+            .apply();
+    }
+
+    private static boolean readBooleanNoArgs(
+        Object target,
+        boolean fallback,
+        String... names
+    ) {
+        if (target == null) return fallback;
+
+        for (String name : names) {
+            try {
+                Method m = target.getClass().getMethod(name);
+                m.setAccessible(true);
+                Object value = m.invoke(target);
+                if (value instanceof Boolean) {
+                    return ((Boolean) value).booleanValue();
+                }
+            } catch (Throwable ignored) {
+            }
+
+            try {
+                Method m = target.getClass().getDeclaredMethod(name);
+                m.setAccessible(true);
+                Object value = m.invoke(target);
+                if (value instanceof Boolean) {
+                    return ((Boolean) value).booleanValue();
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+
+        return fallback;
     }
 
     private static String prepareTextBeforeSpeak(Object delegate, String rawText) {
@@ -347,6 +584,34 @@ public final class AndroidVoiceServiceInjector {
                 out.put("passthroughSpeakCount", passthroughSpeakCount);
                 out.put("sanitizedSpeakCount", sanitizedSpeakCount);
                 out.put("removedMarkdownTokenCount", removedMarkdownTokenCount);
+
+                out.put("duplexCoordinationEnabled", true);
+                out.put("duplexSequence", duplexSequence);
+                out.put("duplexRequestCount", duplexRequestCount);
+                out.put("duplexSpeakingObservedCount", duplexSpeakingObservedCount);
+                out.put("duplexCompletedCount", duplexCompletedCount);
+                out.put("duplexFailedCount", duplexFailedCount);
+                out.put("duplexStartTimeoutCount", duplexStartTimeoutCount);
+                out.put("lastDuplexState", lastDuplexState);
+                out.put("lastDuplexTextPreview", lastDuplexTextPreview);
+                out.put(
+                    "lastDuplexRequestAgeMs",
+                    lastDuplexRequestAtElapsed <= 0L
+                        ? -1L
+                        : Math.max(
+                            0L,
+                            SystemClock.elapsedRealtime() - lastDuplexRequestAtElapsed
+                        )
+                );
+                out.put(
+                    "lastDuplexStateAgeMs",
+                    lastDuplexStateAtElapsed <= 0L
+                        ? -1L
+                        : Math.max(
+                            0L,
+                            SystemClock.elapsedRealtime() - lastDuplexStateAtElapsed
+                        )
+                );
 
                 out.put("lastConfiguredSpeechLanguage", lastConfiguredSpeechLanguage);
                 out.put("lastRoute", lastRoute);
