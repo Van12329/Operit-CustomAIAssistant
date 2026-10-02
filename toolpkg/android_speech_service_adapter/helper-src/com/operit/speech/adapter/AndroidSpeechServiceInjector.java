@@ -258,6 +258,161 @@ public final class AndroidSpeechServiceInjector {
         return o.toString();
     }
 
+    public static String probeOnDeviceRecognitionJson(Context context, String requested) {
+        JSONObject out = new JSONObject();
+        SpeechRecognizer probe = null;
+
+        try {
+            final Context a = context.getApplicationContext();
+            final String language = normalizeLanguage(requested);
+
+            out.put("probe", "ON_DEVICE_RECOGNIZER");
+            out.put("apiLevel", Build.VERSION.SDK_INT);
+            out.put("defaultRecognitionAvailable", SpeechRecognizer.isRecognitionAvailable(a));
+            out.put(
+                "onDeviceRecognitionAvailable",
+                Build.VERSION.SDK_INT >= 31
+                    && SpeechRecognizer.isOnDeviceRecognitionAvailable(a)
+            );
+
+            if (language == null) {
+                out.put("ok", false);
+                out.put("error", "Unsupported adapter locale: " + String.valueOf(requested));
+                return out.toString();
+            }
+            out.put("requestedLanguage", language);
+
+            if (Build.VERSION.SDK_INT < 31) {
+                out.put("ok", false);
+                out.put("error", "On-device SpeechRecognizer requires Android API 31+");
+                return out.toString();
+            }
+
+            if (!SpeechRecognizer.isOnDeviceRecognitionAvailable(a)) {
+                out.put("ok", false);
+                out.put("error", "No on-device recognition service is available");
+                return out.toString();
+            }
+
+            final SpeechRecognizer created =
+                runOnMainSync(
+                    new MainCallable<SpeechRecognizer>() {
+                        @Override
+                        public SpeechRecognizer call() {
+                            return SpeechRecognizer.createOnDeviceSpeechRecognizer(a);
+                        }
+                    },
+                    2500L
+                );
+            probe = created;
+            out.put("created", true);
+
+            if (Build.VERSION.SDK_INT < 33) {
+                out.put("ok", true);
+                out.put("supportQueryAvailable", false);
+                return out.toString();
+            }
+
+            final CountDownLatch latch = new CountDownLatch(1);
+            final AtomicReference<RecognitionSupport> supportRef = new AtomicReference<>();
+            final AtomicReference<Integer> errorRef = new AtomicReference<>();
+            final Intent intent = buildRecognitionIntent(language, true, false);
+
+            runOnMainSync(
+                new MainCallable<Boolean>() {
+                    @Override
+                    public Boolean call() {
+                        created.checkRecognitionSupport(
+                            intent,
+                            DIRECT_EXECUTOR,
+                            new RecognitionSupportCallback() {
+                                @Override
+                                public void onSupportResult(RecognitionSupport recognitionSupport) {
+                                    supportRef.set(recognitionSupport);
+                                    latch.countDown();
+                                }
+
+                                @Override
+                                public void onError(int error) {
+                                    errorRef.set(error);
+                                    latch.countDown();
+                                }
+                            }
+                        );
+                        return Boolean.TRUE;
+                    }
+                },
+                2500L
+            );
+
+            if (!latch.await(6000L, TimeUnit.MILLISECONDS)) {
+                out.put("ok", false);
+                out.put("supportQueryAvailable", true);
+                out.put("error", "On-device RecognitionSupport callback timeout");
+                return out.toString();
+            }
+
+            Integer supportError = errorRef.get();
+            if (supportError != null) {
+                out.put("ok", false);
+                out.put("supportQueryAvailable", true);
+                out.put("supportErrorCode", supportError.intValue());
+                out.put("supportErrorName", recognitionErrorName(supportError.intValue()));
+                out.put("error", "On-device RecognitionSupport query failed");
+                return out.toString();
+            }
+
+            RecognitionSupport support = supportRef.get();
+            if (support == null) {
+                out.put("ok", false);
+                out.put("supportQueryAvailable", true);
+                out.put("error", "On-device RecognitionSupport returned no data");
+                return out.toString();
+            }
+
+            List<String> installed = support.getInstalledOnDeviceLanguages();
+            List<String> pending = support.getPendingOnDeviceLanguages();
+            List<String> supported = support.getSupportedOnDeviceLanguages();
+            List<String> online = support.getOnlineLanguages();
+
+            out.put("supportQueryAvailable", true);
+            out.put("installedOnDeviceLanguages", new JSONArray(installed));
+            out.put("pendingOnDeviceLanguages", new JSONArray(pending));
+            out.put("supportedOnDeviceLanguages", new JSONArray(supported));
+            out.put("onlineLanguages", new JSONArray(online));
+            out.put("requestedInstalledOnDevice", containsLanguage(installed, language));
+            out.put("requestedPendingOnDevice", containsLanguage(pending, language));
+            out.put("requestedSupportedOnDevice", containsLanguage(supported, language));
+            out.put("requestedOnline", containsLanguage(online, language));
+            out.put("ok", true);
+        } catch (Throwable t) {
+            try {
+                out.put("ok", false);
+                out.put("error", describe(t));
+            } catch (Throwable ignored) {
+            }
+        } finally {
+            final SpeechRecognizer toDestroy = probe;
+            if (toDestroy != null) {
+                try {
+                    runOnMainSync(
+                        new MainCallable<Boolean>() {
+                            @Override
+                            public Boolean call() {
+                                toDestroy.destroy();
+                                return Boolean.TRUE;
+                            }
+                        },
+                        2500L
+                    );
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+
+        return out.toString();
+    }
+
     public static String checkRecognitionSupportJson(Context context, String requested) {
         JSONObject out = new JSONObject();
         SpeechRecognizer probe = null;
@@ -650,6 +805,8 @@ public final class AndroidSpeechServiceInjector {
                 return "ERROR_LANGUAGE_UNAVAILABLE";
             case SpeechRecognizer.ERROR_CANNOT_CHECK_SUPPORT:
                 return "ERROR_CANNOT_CHECK_SUPPORT";
+            case SpeechRecognizer.ERROR_CANNOT_LISTEN_TO_DOWNLOAD_EVENTS:
+                return "ERROR_CANNOT_LISTEN_TO_DOWNLOAD_EVENTS";
             default: return "ERROR_" + code;
         }
     }
