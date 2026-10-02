@@ -80,6 +80,24 @@
       ]
     },
     {
+      "name": "android_speech_service_request_on_device_model_download",
+      "description": {
+        "en": "Request installation of a speech model from Android's dedicated on-device recognizer. Does not use the microphone. On Android 14+ reports progress/scheduled/success/error through the shared model-download status.",
+        "zh": "Request an on-device speech model download without using the microphone."
+      },
+      "parameters": [
+        {
+          "name": "language",
+          "type": "string",
+          "required": true,
+          "description": {
+            "en": "ru-RU, es-US, es-419, es-AR, or es-ES",
+            "zh": "ru-RU, es-US, es-419, es-AR, or es-ES"
+          }
+        }
+      ]
+    },
+    {
       "name": "android_speech_service_request_model_download",
       "description": {
         "en": "Request on-device recognition support download for a locale. The Android recognizer may show system UI or schedule the download.",
@@ -218,6 +236,23 @@ async function android_speech_service_check_support(params) {
   }
 }
 
+async function android_speech_service_request_on_device_model_download(params) {
+  try {
+    await ensureLoaded();
+    const context = Java.getApplicationContext();
+    const language = String(params && params.language ? params.language : "");
+    const raw = Java.callStatic(
+      "com.operit.speech.adapter.AndroidSpeechServiceInjector",
+      "requestOnDeviceModelDownloadJson",
+      context,
+      language
+    );
+    return JSON.parse(String(raw));
+  } catch (error) {
+    return {ok: false, error: String(error && error.message ? error.message : error)};
+  }
+}
+
 async function android_speech_service_request_model_download(params) {
   try {
     await ensureLoaded();
@@ -270,6 +305,7 @@ exports.android_speech_service_set_language = android_speech_service_set_languag
 exports.android_speech_service_list_system_languages = android_speech_service_list_system_languages;
 exports.android_speech_service_probe_on_device = android_speech_service_probe_on_device;
 exports.android_speech_service_check_support = android_speech_service_check_support;
+exports.android_speech_service_request_on_device_model_download = android_speech_service_request_on_device_model_download;
 exports.android_speech_service_request_model_download = android_speech_service_request_model_download;
 exports.android_speech_service_model_download_status = android_speech_service_model_download_status;
 exports.android_speech_service_uninstall_runtime = android_speech_service_uninstall_runtime;
