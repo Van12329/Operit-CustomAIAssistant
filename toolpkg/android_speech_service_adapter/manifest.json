@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "toolpkg_id": "com.operit.android_speech_service_adapter",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "api_version": "1.0.0",
   "main": "dist/main.js",
   "display_name": {
@@ -9,7 +9,7 @@
     "zh": "Android SpeechService Adapter"
   },
   "description": {
-    "en": "Injects Android SpeechRecognizer as Operit's conversational SpeechService with Russian and Spanish locales. Publishes final recognition results only to match Operit's stock accumulation semantics.",
+    "en": "Injects Android SpeechRecognizer as Operit's conversational SpeechService with Russian and Spanish locales. Publishes final results only and exposes capability/model-download diagnostics for multilingual offline recognition.",
     "zh": "Android SpeechRecognizer SpeechService adapter for Operit."
   },
   "enabled_by_default": true,
