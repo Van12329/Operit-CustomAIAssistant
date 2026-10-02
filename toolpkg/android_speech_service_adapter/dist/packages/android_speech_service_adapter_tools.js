@@ -29,11 +29,19 @@
           "type": "string",
           "required": true,
           "description": {
-            "en": "ru-RU, es-AR, or es-ES",
-            "zh": "ru-RU, es-AR, or es-ES"
+            "en": "ru-RU, es-US, es-419, es-AR, or es-ES",
+            "zh": "ru-RU, es-US, es-419, es-AR, or es-ES"
           }
         }
       ]
+    },
+    {
+      "name": "android_speech_service_list_system_languages",
+      "description": {
+        "en": "Read the installed voice-recognition service's language-details broadcast without using the microphone or requesting downloads. Returns the language preference and any supported-language list the service chooses to publish.",
+        "zh": "Read voice recognition language details without using the microphone or downloading models."
+      },
+      "parameters": []
     },
     {
       "name": "android_speech_service_probe_on_device",
@@ -47,8 +55,8 @@
           "type": "string",
           "required": true,
           "description": {
-            "en": "ru-RU, es-AR, or es-ES",
-            "zh": "ru-RU, es-AR, or es-ES"
+            "en": "ru-RU, es-US, es-419, es-AR, or es-ES",
+            "zh": "ru-RU, es-US, es-419, es-AR, or es-ES"
           }
         }
       ]
@@ -65,8 +73,8 @@
           "type": "string",
           "required": true,
           "description": {
-            "en": "ru-RU, es-AR, or es-ES",
-            "zh": "ru-RU, es-AR, or es-ES"
+            "en": "ru-RU, es-US, es-419, es-AR, or es-ES",
+            "zh": "ru-RU, es-US, es-419, es-AR, or es-ES"
           }
         }
       ]
@@ -83,8 +91,8 @@
           "type": "string",
           "required": true,
           "description": {
-            "en": "ru-RU, es-AR, or es-ES",
-            "zh": "ru-RU, es-AR, or es-ES"
+            "en": "ru-RU, es-US, es-419, es-AR, or es-ES",
+            "zh": "ru-RU, es-US, es-419, es-AR, or es-ES"
           }
         }
       ]
@@ -156,6 +164,21 @@ async function android_speech_service_set_language(params) {
       language
     );
     return {ok: !!ok, language};
+  } catch (error) {
+    return {ok: false, error: String(error && error.message ? error.message : error)};
+  }
+}
+
+async function android_speech_service_list_system_languages() {
+  try {
+    await ensureLoaded();
+    const context = Java.getApplicationContext();
+    const raw = Java.callStatic(
+      "com.operit.speech.adapter.AndroidSpeechServiceInjector",
+      "getVoiceLanguageDetailsJson",
+      context
+    );
+    return JSON.parse(String(raw));
   } catch (error) {
     return {ok: false, error: String(error && error.message ? error.message : error)};
   }
@@ -244,6 +267,7 @@ async function android_speech_service_uninstall_runtime() {
 
 exports.android_speech_service_status = android_speech_service_status;
 exports.android_speech_service_set_language = android_speech_service_set_language;
+exports.android_speech_service_list_system_languages = android_speech_service_list_system_languages;
 exports.android_speech_service_probe_on_device = android_speech_service_probe_on_device;
 exports.android_speech_service_check_support = android_speech_service_check_support;
 exports.android_speech_service_request_model_download = android_speech_service_request_model_download;
