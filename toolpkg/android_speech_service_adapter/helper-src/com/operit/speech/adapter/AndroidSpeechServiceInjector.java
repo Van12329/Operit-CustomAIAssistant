@@ -65,13 +65,21 @@ public final class AndroidSpeechServiceInjector {
     private static final String MODE_MANUAL = "MANUAL";
     private static final String AUTO_ALLOWED_LANGUAGES = "ru-RU,es-US";
     private static final long CONTINUATION_RESTART_DELAY_MS = 120L;
-    private static final long CONTINUATION_HOLD_MS = 1600L;
+    private static final long CONTINUATION_HOLD_MS = 1100L;
+    private static final long CONTINUATION_LEXICAL_GRACE_MS = 300L;
     private static final long KEEPALIVE_MIN_INTERVAL_MS = 500L;
 
     private static final String VOICE_FACTORY =
         "com.ai.assistance.operit.api.voice.VoiceServiceFactory";
+
+    private static final String DUPLEX_PREFS = "operit_voice_duplex_coordination";
+    private static final String DUPLEX_KEY_SEQ = "tts_seq";
+    private static final String DUPLEX_KEY_STATE = "tts_state";
+    private static final String DUPLEX_KEY_REQUEST_AT = "tts_request_at_elapsed";
+    private static final long DUPLEX_COORD_FRESH_MS = 30_000L;
+
     private static final long TTS_GATE_POLL_MS = 50L;
-    private static final long TTS_GATE_RACE_GUARD_MS = 120L;
+    private static final long TTS_GATE_WAKE_DISCOVERY_MS = 600L;
     private static final long TTS_GATE_IDLE_TAIL_MS = 120L;
     private static final long TTS_GATE_MAX_WAIT_MS = 15_000L;
 
@@ -1233,6 +1241,8 @@ public final class AndroidSpeechServiceInjector {
         private boolean allowContinuation;
         private boolean continuationArmed;
         private boolean continuationSpeechActive;
+        private boolean continuationCandidateSpeech;
+        private long continuationCandidateStartedAtMs;
         private long continuationGeneration;
         private long lastKeepAliveAtMs;
         private boolean keepAliveToggle;
@@ -1242,12 +1252,22 @@ public final class AndroidSpeechServiceInjector {
         private long ttsGateGeneration;
         private boolean ttsGateWaiting;
         private boolean ttsGateObservedSpeaking;
+        private boolean ttsGateCoordinationObserved;
+        private boolean ttsGateWakeInitial;
         private long ttsGateStartedAtMs;
         private long ttsGateIdleSinceMs;
+        private long ttsGateCoordSeq;
+        private String ttsGateCoordState = "";
         private Object ttsGateVoiceService;
+        private Object lastFloatingChatService;
+        private boolean wakeInitialConsumedForService;
         private long ttsGateChecks;
         private long ttsGateDeferrals;
         private long ttsGateObservedSpeakingCount;
+        private long ttsGateCoordinationObservedCount;
+        private long ttsGateCoordinationPendingDeferrals;
+        private long ttsGateWakeInitialCount;
+        private long ttsGateWakeDiscoveryDeferrals;
         private long ttsGateTimeouts;
         private long ttsGateStartCount;
         private long ttsGateTotalWaitMs;
@@ -1285,6 +1305,10 @@ public final class AndroidSpeechServiceInjector {
         private long androidStartListeningCalls = 0L;
         private long continuationRestarts = 0L;
         private long continuationBegins = 0L;
+        private long continuationCandidateBegins = 0L;
+        private long continuationLexicalConfirms = 0L;
+        private long continuationNoiseRejected = 0L;
+        private long continuationLexicalGraceExtensions = 0L;
         private long continuationReleaseTimeouts = 0L;
         private long suppressedContinuationEndErrors = 0L;
         private long keepAlivePublishes = 0L;
@@ -1419,6 +1443,7 @@ public final class AndroidSpeechServiceInjector {
 
             allowContinuation = true;
             continuationArmed = false;
+            continuationCandidateSpeech = false;
             continuationSpeechActive = false;
             continuationGeneration++;
             turnBuffer.setLength(0);
@@ -1451,8 +1476,14 @@ public final class AndroidSpeechServiceInjector {
 
             ttsGateWaiting = true;
             ttsGateObservedSpeaking = false;
+            ttsGateCoordinationObserved = false;
+            ttsGateWakeInitial = isWakeInitialRecognition();
+            if (ttsGateWakeInitial) ttsGateWakeInitialCount++;
+
             ttsGateStartedAtMs = SystemClock.elapsedRealtime();
             ttsGateIdleSinceMs = 0L;
+            ttsGateCoordSeq = 0L;
+            ttsGateCoordState = "";
             ttsGateVoiceService = getCurrentVoiceServiceQuiet();
 
             checkTtsGateAndStart(generation);
@@ -1469,6 +1500,17 @@ public final class AndroidSpeechServiceInjector {
             ttsGateChecks++;
 
             VoiceActivityState voice = readVoiceActivityState(ttsGateVoiceService);
+            DuplexCoordState coord = readDuplexCoordState(now);
+
+            if (coord.fresh && coord.seq > 0L) {
+                if (!ttsGateCoordinationObserved
+                    || coord.seq != ttsGateCoordSeq) {
+                    ttsGateCoordinationObservedCount++;
+                }
+                ttsGateCoordinationObserved = true;
+                ttsGateCoordSeq = coord.seq;
+                ttsGateCoordState = coord.state;
+            }
 
             if (voice.speaking) {
                 if (!ttsGateObservedSpeaking) {
@@ -1481,21 +1523,31 @@ public final class AndroidSpeechServiceInjector {
                 return;
             }
 
-            if (!voice.initialized && waited < TTS_GATE_RACE_GUARD_MS) {
+            if (coord.pending) {
+                ttsGateCoordinationPendingDeferrals++;
+                ttsGateIdleSinceMs = 0L;
                 ttsGateDeferrals++;
                 scheduleTtsGateCheck(generation);
                 return;
             }
 
-            if (!ttsGateObservedSpeaking && waited < TTS_GATE_RACE_GUARD_MS) {
-                // The wake greeting is queued immediately before startRecognition().
-                // Give its coroutine a tiny window to mark VoiceService as speaking.
+            if (ttsGateWakeInitial
+                && !ttsGateCoordinationObserved
+                && !ttsGateObservedSpeaking
+                && waited < TTS_GATE_WAKE_DISCOVERY_MS) {
+                // On wake, SpeechInteractionManager launches greeting TTS in one
+                // coroutine and STT in another. Give the VoiceService adapter time
+                // to publish REQUESTED even if TTS initialization is still pending.
+                ttsGateWakeDiscoveryDeferrals++;
                 ttsGateDeferrals++;
                 scheduleTtsGateCheck(generation);
                 return;
             }
 
-            if (ttsGateObservedSpeaking) {
+            boolean hadTtsOwnership =
+                ttsGateObservedSpeaking || ttsGateCoordinationObserved;
+
+            if (hadTtsOwnership) {
                 if (ttsGateIdleSinceMs == 0L) {
                     ttsGateIdleSinceMs = now;
                     ttsGateDeferrals++;
@@ -1510,9 +1562,12 @@ public final class AndroidSpeechServiceInjector {
                 }
             }
 
-            if (waited >= TTS_GATE_MAX_WAIT_MS) {
-                ttsGateTimeouts++;
-            }
+            finishTtsGateAndStart(waited, false);
+        }
+
+        private void finishTtsGateAndStart(long waited, boolean timedOut)
+            throws Exception {
+            if (timedOut) ttsGateTimeouts++;
 
             ttsGateWaiting = false;
             lastTtsGateWaitMs = waited;
@@ -1529,13 +1584,7 @@ public final class AndroidSpeechServiceInjector {
 
             if (waited >= TTS_GATE_MAX_WAIT_MS) {
                 try {
-                    ttsGateTimeouts++;
-                    ttsGateWaiting = false;
-                    lastTtsGateWaitMs = waited;
-                    ttsGateTotalWaitMs += waited;
-                    if (waited > ttsGateMaxWaitMs) ttsGateMaxWaitMs = waited;
-                    ttsGateStartCount++;
-                    startRecognizerSessionOnMain(false);
+                    finishTtsGateAndStart(waited, true);
                 } catch (Throwable t) {
                     recognizing = false;
                     publishError(-1006, describe(t));
@@ -1558,6 +1607,101 @@ public final class AndroidSpeechServiceInjector {
                 },
                 TTS_GATE_POLL_MS
             );
+        }
+
+        private DuplexCoordState readDuplexCoordState(long nowElapsed) {
+            try {
+                SharedPreferences prefs =
+                    app.getSharedPreferences(DUPLEX_PREFS, Context.MODE_PRIVATE);
+                long seq = prefs.getLong(DUPLEX_KEY_SEQ, 0L);
+                String state = prefs.getString(DUPLEX_KEY_STATE, "");
+                long requestAt = prefs.getLong(DUPLEX_KEY_REQUEST_AT, 0L);
+
+                long age =
+                    requestAt <= 0L
+                        ? Long.MAX_VALUE
+                        : nowElapsed - requestAt;
+                boolean fresh = age >= 0L && age <= DUPLEX_COORD_FRESH_MS;
+                boolean pending =
+                    fresh
+                        && ("REQUESTED".equals(state)
+                            || "SPEAKING".equals(state));
+
+                return new DuplexCoordState(
+                    seq,
+                    state == null ? "" : state,
+                    requestAt,
+                    fresh,
+                    pending
+                );
+            } catch (Throwable ignored) {
+                return new DuplexCoordState(0L, "", 0L, false, false);
+            }
+        }
+
+        private boolean isWakeInitialRecognition() {
+            try {
+                Class<?> serviceClass =
+                    Class.forName(
+                        "com.ai.assistance.operit.services.FloatingChatService",
+                        false,
+                        cl
+                    );
+                Field companionField = serviceClass.getField("Companion");
+                Object companion = companionField.get(null);
+                if (companion == null) return false;
+
+                Method getInstance =
+                    companion.getClass().getMethod("getInstance");
+                Object service = getInstance.invoke(companion);
+
+                if (service == null) {
+                    lastFloatingChatService = null;
+                    wakeInitialConsumedForService = false;
+                    return false;
+                }
+
+                if (service != lastFloatingChatService) {
+                    lastFloatingChatService = service;
+                    wakeInitialConsumedForService = false;
+                }
+
+                Method isWakeLaunched =
+                    service.getClass().getMethod("isWakeLaunched");
+                Object value = isWakeLaunched.invoke(service);
+                boolean wake = value instanceof Boolean
+                    && ((Boolean) value).booleanValue();
+
+                if (wake && !wakeInitialConsumedForService) {
+                    wakeInitialConsumedForService = true;
+                    return true;
+                }
+            } catch (Throwable ignored) {
+            }
+
+            return false;
+        }
+
+        private static final class DuplexCoordState {
+            final long seq;
+            final String state;
+            final long requestAt;
+            final boolean fresh;
+            final boolean pending;
+
+            DuplexCoordState(
+                long seq,
+                String state,
+                long requestAt,
+                boolean fresh,
+                boolean pending
+            ) {
+                this.seq = seq;
+                this.state = state;
+                this.requestAt = requestAt;
+                this.fresh = fresh;
+                this.pending = pending;
+            }
         }
 
         private Object getCurrentVoiceServiceQuiet() {
@@ -1702,7 +1846,25 @@ public final class AndroidSpeechServiceInjector {
         private void armContinuationRelease() {
             continuationArmed = true;
             continuationSpeechActive = false;
+            continuationCandidateSpeech = false;
+            continuationCandidateStartedAtMs = 0L;
+
             final long generation = ++continuationGeneration;
+            scheduleContinuationReleaseCheck(
+                generation,
+                SystemClock.elapsedRealtime() + CONTINUATION_HOLD_MS
+            );
+        }
+
+        private void scheduleContinuationReleaseCheck(
+            final long generation,
+            final long deadlineMs
+        ) {
+            long delayMs =
+                Math.max(
+                    0L,
+                    deadlineMs - SystemClock.elapsedRealtime()
+                );
 
             MAIN.postDelayed(
                 new Runnable() {
@@ -1714,7 +1876,32 @@ public final class AndroidSpeechServiceInjector {
                             return;
                         }
 
+                        long now = SystemClock.elapsedRealtime();
+
+                        if (continuationCandidateSpeech
+                            && continuationCandidateStartedAtMs > 0L) {
+                            long candidateAge =
+                                now - continuationCandidateStartedAtMs;
+
+                            if (candidateAge >= 0L
+                                && candidateAge < CONTINUATION_LEXICAL_GRACE_MS) {
+                                continuationLexicalGraceExtensions++;
+                                scheduleContinuationReleaseCheck(
+                                    generation,
+                                    continuationCandidateStartedAtMs
+                                        + CONTINUATION_LEXICAL_GRACE_MS
+                                );
+                                return;
+                            }
+                        }
+
+                        if (continuationCandidateSpeech) {
+                            continuationNoiseRejected++;
+                        }
+
                         continuationArmed = false;
+                        continuationCandidateSpeech = false;
+                        continuationSpeechActive = false;
                         continuationReleaseTimeouts++;
 
                         if (recognizer != null && recognizing) {
@@ -1723,22 +1910,33 @@ public final class AndroidSpeechServiceInjector {
                         }
 
                         recognizing = false;
-                        continuationSpeechActive = false;
                         setFlowQuiet(volumeFlow, Float.valueOf(0f));
                         setStateQuiet("IDLE");
                     }
                 },
-                CONTINUATION_HOLD_MS
+                delayMs
             );
         }
 
-        private void noteContinuationSpeechBeginning() {
+        private void noteContinuationSpeechCandidate() {
+            if (turnBuffer.length() == 0 || !continuationArmed) return;
+
+            if (!continuationCandidateSpeech) {
+                continuationCandidateSpeech = true;
+                continuationCandidateStartedAtMs = SystemClock.elapsedRealtime();
+                continuationCandidateBegins++;
+            }
+        }
+
+        private void confirmContinuationLexical() {
             if (turnBuffer.length() == 0) return;
 
             if (continuationArmed) {
                 continuationArmed = false;
+                continuationCandidateSpeech = false;
                 continuationGeneration++;
                 continuationBegins++;
+                continuationLexicalConfirms++;
             }
 
             continuationSpeechActive = true;
@@ -1792,6 +1990,7 @@ public final class AndroidSpeechServiceInjector {
         private boolean stopRecognition() {
             allowContinuation = false;
             continuationArmed = false;
+            continuationCandidateSpeech = false;
             continuationSpeechActive = false;
             continuationGeneration++;
             ttsGateWaiting = false;
@@ -1904,19 +2103,32 @@ public final class AndroidSpeechServiceInjector {
             o.put("continuationHoldMs", CONTINUATION_HOLD_MS);
             o.put("ttsDuplexGateEnabled", true);
             o.put("ttsGateWaiting", ttsGateWaiting);
-            o.put("ttsGateRaceGuardMs", TTS_GATE_RACE_GUARD_MS);
+            o.put("ttsGateWakeInitial", ttsGateWakeInitial);
+            o.put("ttsGateWakeDiscoveryMs", TTS_GATE_WAKE_DISCOVERY_MS);
             o.put("ttsGateIdleTailMs", TTS_GATE_IDLE_TAIL_MS);
             o.put("ttsGateChecks", ttsGateChecks);
             o.put("ttsGateDeferrals", ttsGateDeferrals);
             o.put("ttsGateObservedSpeakingCount", ttsGateObservedSpeakingCount);
+            o.put("ttsGateCoordinationObserved", ttsGateCoordinationObserved);
+            o.put("ttsGateCoordSeq", ttsGateCoordSeq);
+            o.put("ttsGateCoordState", ttsGateCoordState);
+            o.put("ttsGateCoordinationObservedCount", ttsGateCoordinationObservedCount);
+            o.put("ttsGateCoordinationPendingDeferrals", ttsGateCoordinationPendingDeferrals);
+            o.put("ttsGateWakeInitialCount", ttsGateWakeInitialCount);
+            o.put("ttsGateWakeDiscoveryDeferrals", ttsGateWakeDiscoveryDeferrals);
             o.put("ttsGateTimeouts", ttsGateTimeouts);
             o.put("ttsGateStartCount", ttsGateStartCount);
             o.put("lastTtsGateWaitMs", lastTtsGateWaitMs);
             o.put("ttsGateTotalWaitMs", ttsGateTotalWaitMs);
             o.put("ttsGateMaxWaitMs", ttsGateMaxWaitMs);
             o.put("continuationRestartDelayMs", CONTINUATION_RESTART_DELAY_MS);
+            o.put("continuationLexicalGraceMs", CONTINUATION_LEXICAL_GRACE_MS);
             o.put("continuationRestarts", continuationRestarts);
             o.put("continuationBegins", continuationBegins);
+            o.put("continuationCandidateBegins", continuationCandidateBegins);
+            o.put("continuationLexicalConfirms", continuationLexicalConfirms);
+            o.put("continuationNoiseRejected", continuationNoiseRejected);
+            o.put("continuationLexicalGraceExtensions", continuationLexicalGraceExtensions);
             o.put("continuationReleaseTimeouts", continuationReleaseTimeouts);
             o.put("suppressedContinuationEndErrors", suppressedContinuationEndErrors);
             o.put("keepAlivePublishes", keepAlivePublishes);
@@ -1946,7 +2158,7 @@ public final class AndroidSpeechServiceInjector {
                     @Override
                     public void onBeginningOfSpeech() {
                         recognizing = true;
-                        noteContinuationSpeechBeginning();
+                        noteContinuationSpeechCandidate();
                         setStateQuiet("RECOGNIZING");
                     }
 
@@ -1967,7 +2179,6 @@ public final class AndroidSpeechServiceInjector {
 
                     @Override
                     public void onEndOfSpeech() {
-                        continuationSpeechActive = false;
                         setStateQuiet("PROCESSING");
                     }
 
@@ -1986,6 +2197,7 @@ public final class AndroidSpeechServiceInjector {
                             suppressedContinuationEndErrors++;
                             recognizing = false;
                             continuationArmed = false;
+                            continuationCandidateSpeech = false;
                             continuationSpeechActive = false;
                             continuationGeneration++;
                             setFlowQuiet(volumeFlow, Float.valueOf(0f));
@@ -1995,6 +2207,7 @@ public final class AndroidSpeechServiceInjector {
 
                         recognizing = false;
                         continuationArmed = false;
+                        continuationCandidateSpeech = false;
                         continuationSpeechActive = false;
                         setFlowQuiet(volumeFlow, Float.valueOf(0f));
                         publishError(error, recognitionErrorMessage(error));
@@ -2061,11 +2274,16 @@ public final class AndroidSpeechServiceInjector {
                         setFlowQuiet(volumeFlow, Float.valueOf(0f));
 
                         if (!text.isEmpty()) {
+                            if (turnBuffer.length() > 0 && continuationArmed) {
+                                confirmContinuationLexical();
+                            }
                             String cumulative = appendStableSegment(text);
                             lastFinalText = cumulative;
                             lastErrorCode = 0;
                             lastErrorMessage = "";
                             finalResults++;
+                            continuationCandidateSpeech = false;
+                            continuationSpeechActive = false;
                             setFlowQuiet(
                                 resultFlow,
                                 newRecognitionResultQuiet(cumulative, true, 1f)
@@ -2083,12 +2301,17 @@ public final class AndroidSpeechServiceInjector {
                     public void onPartialResults(Bundle partialResults) {
                         String text = firstResult(partialResults);
                         if (!text.isEmpty()) {
-                            // Keep vendor partials diagnostic-only because they can revise
-                            // earlier words. Once a stable segment exists, publish only the
-                            // stable cumulative prefix as a keepalive so Operit's 2s silence
-                            // timer does not fire while the user is actively continuing.
+                            // Vendor partials can revise earlier words, so they remain
+                            // diagnostic-only. But non-empty lexical text is strong evidence
+                            // that a continuation is real speech rather than breathing/noise.
                             lastPartialText = text;
-                            if (continuationSpeechActive && turnBuffer.length() > 0) {
+
+                            if (turnBuffer.length() > 0 && continuationArmed) {
+                                confirmContinuationLexical();
+                            } else if (
+                                continuationSpeechActive
+                                    && turnBuffer.length() > 0
+                            ) {
                                 publishStableKeepAlive(false);
                             }
                         }
