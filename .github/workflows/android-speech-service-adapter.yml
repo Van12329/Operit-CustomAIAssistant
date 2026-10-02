@@ -3,7 +3,7 @@ name: Build Android SpeechService Adapter
 on:
   push:
     branches:
-      - feature/android-speech-service-adapter-021
+      - feature/android-speech-service-adapter-022
     paths:
       - .github/workflows/android-speech-service-adapter.yml
       - toolpkg/android_speech_service_adapter/**
@@ -48,13 +48,13 @@ jobs:
         run: |
           set -euo pipefail
           ROOT="toolpkg/android_speech_service_adapter"
-          OUT="Android-SpeechService-Adapter-v0.2.1.toolpkg"
+          OUT="Android-SpeechService-Adapter-v0.2.2.toolpkg"
           (cd "$ROOT" && zip -qr "$GITHUB_WORKSPACE/$OUT" manifest.json dist resources/android-speech-service-adapter-helper.dex)
           unzip -l "$OUT"
           sha256sum "$OUT"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: Android-SpeechService-Adapter-v0.2.1
-          path: Android-SpeechService-Adapter-v0.2.1.toolpkg
+          name: Android-SpeechService-Adapter-v0.2.2
+          path: Android-SpeechService-Adapter-v0.2.2.toolpkg
           if-no-files-found: error
           retention-days: 14
