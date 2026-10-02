@@ -72,6 +72,14 @@
       ]
     },
     {
+      "name": "android_speech_service_model_download_status",
+      "description": {
+        "en": "Read observable Android model-download state for the active locale request: requested, downloading, scheduled, success, or error.",
+        "zh": "Read Android speech model download status."
+      },
+      "parameters": []
+    },
+    {
       "name": "android_speech_service_uninstall_runtime",
       "description": {
         "en": "Restore the original SpeechServiceFactory instance for this process. Force-stop/restart after using this control.",
@@ -169,6 +177,21 @@ async function android_speech_service_request_model_download(params) {
   }
 }
 
+async function android_speech_service_model_download_status() {
+  try {
+    await ensureLoaded();
+    const context = Java.getApplicationContext();
+    const raw = Java.callStatic(
+      "com.operit.speech.adapter.AndroidSpeechServiceInjector",
+      "getModelDownloadStatusJson",
+      context
+    );
+    return JSON.parse(String(raw));
+  } catch (error) {
+    return {ok: false, error: String(error && error.message ? error.message : error)};
+  }
+}
+
 async function android_speech_service_uninstall_runtime() {
   try {
     await ensureLoaded();
@@ -188,4 +211,5 @@ exports.android_speech_service_status = android_speech_service_status;
 exports.android_speech_service_set_language = android_speech_service_set_language;
 exports.android_speech_service_check_support = android_speech_service_check_support;
 exports.android_speech_service_request_model_download = android_speech_service_request_model_download;
+exports.android_speech_service_model_download_status = android_speech_service_model_download_status;
 exports.android_speech_service_uninstall_runtime = android_speech_service_uninstall_runtime;
