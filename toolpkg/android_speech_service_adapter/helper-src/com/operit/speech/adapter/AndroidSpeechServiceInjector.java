@@ -9,6 +9,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.speech.ModelDownloadListener;
 import android.speech.RecognitionListener;
 import android.speech.RecognitionSupport;
@@ -63,6 +64,9 @@ public final class AndroidSpeechServiceInjector {
     private static final String MODE_AUTO = "AUTO";
     private static final String MODE_MANUAL = "MANUAL";
     private static final String AUTO_ALLOWED_LANGUAGES = "ru-RU,es-US";
+    private static final long CONTINUATION_RESTART_DELAY_MS = 120L;
+    private static final long CONTINUATION_HOLD_MS = 1600L;
+    private static final long KEEPALIVE_MIN_INTERVAL_MS = 500L;
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final Object LOCK = new Object();
@@ -1058,6 +1062,17 @@ public final class AndroidSpeechServiceInjector {
         Intent intent =
             buildRecognitionIntent(language, preferOffline, partialResults);
 
+        if (Build.VERSION.SDK_INT >= 33) {
+            intent.putExtra(
+                RecognizerIntent.EXTRA_ENABLE_FORMATTING,
+                RecognizerIntent.FORMATTING_OPTIMIZE_QUALITY
+            );
+            intent.putExtra(
+                RecognizerIntent.EXTRA_HIDE_PARTIAL_TRAILING_PUNCTUATION,
+                true
+            );
+        }
+
         if (autoLanguage && Build.VERSION.SDK_INT >= 34) {
             ArrayList<String> allowed =
                 new ArrayList<>(Arrays.asList("ru-RU", "es-US"));
@@ -1208,6 +1223,15 @@ public final class AndroidSpeechServiceInjector {
 
         private SpeechRecognizer recognizer;
         private boolean recognizing;
+        private boolean allowContinuation;
+        private boolean continuationArmed;
+        private boolean continuationSpeechActive;
+        private long continuationGeneration;
+        private long lastKeepAliveAtMs;
+        private boolean keepAliveToggle;
+        private boolean activePartialResults;
+        private final StringBuilder turnBuffer = new StringBuilder();
+
         private boolean suppressExpectedClientError;
         private long suppressClientErrorGeneration;
         private long suppressedExpectedClientErrors;
@@ -1236,6 +1260,12 @@ public final class AndroidSpeechServiceInjector {
         private String lastErrorMessage = "";
         private long recognitionStarts = 0L;
         private long finalResults = 0L;
+        private long androidStartListeningCalls = 0L;
+        private long continuationRestarts = 0L;
+        private long continuationBegins = 0L;
+        private long continuationReleaseTimeouts = 0L;
+        private long suppressedContinuationEndErrors = 0L;
+        private long keepAlivePublishes = 0L;
 
         AndroidSpeechHandler(Context app, ClassLoader cl) throws Exception {
             this.app = app;
@@ -1354,6 +1384,7 @@ public final class AndroidSpeechServiceInjector {
         private boolean startRecognition(String requestedLanguage, boolean partialResults) {
             lastRequestedLanguage = requestedLanguage == null ? "" : requestedLanguage;
             lastPartialText = "";
+
             String actual = getConfiguredLanguage(app);
             String mode = getLanguageMode(app);
             boolean autoLanguage =
@@ -1362,29 +1393,27 @@ public final class AndroidSpeechServiceInjector {
             lastActualLanguage = actual;
             lastLanguageMode = mode;
             lastAutoSwitchRequested = autoLanguage;
+            activePartialResults = partialResults;
+
+            allowContinuation = true;
+            continuationArmed = false;
+            continuationSpeechActive = false;
+            continuationGeneration++;
+            turnBuffer.setLength(0);
+            lastKeepAliveAtMs = 0L;
 
             try {
                 Boolean ok = runOnMainSync(() -> {
                     ensureRecognizerOnMain();
 
                     if (recognizing) {
+                        markExpectedClientErrorFromCancel();
                         try { recognizer.cancel(); } catch (Throwable ignored) {}
                         recognizing = false;
                     }
 
-                    Intent intent =
-                        buildRuntimeRecognitionIntent(
-                            actual,
-                            true,
-                            partialResults,
-                            autoLanguage
-                        );
-
-                    setState("PREPARING");
-                    recognizing = true;
+                    startRecognizerSessionOnMain(false);
                     recognitionStarts++;
-                    if (autoLanguage) autoSwitchRequestedCount++;
-                    recognizer.startListening(intent);
                     return Boolean.TRUE;
                 }, 2500L);
                 return Boolean.TRUE.equals(ok);
@@ -1395,7 +1424,158 @@ public final class AndroidSpeechServiceInjector {
             }
         }
 
+        private void startRecognizerSessionOnMain(boolean continuation) throws Exception {
+            String actual = getConfiguredLanguage(app);
+            String mode = getLanguageMode(app);
+            boolean autoLanguage =
+                MODE_AUTO.equals(mode) && Build.VERSION.SDK_INT >= 34;
+
+            lastActualLanguage = actual;
+            lastLanguageMode = mode;
+            lastAutoSwitchRequested = autoLanguage;
+
+            Intent intent =
+                buildRuntimeRecognitionIntent(
+                    actual,
+                    true,
+                    activePartialResults,
+                    autoLanguage
+                );
+
+            setState("PREPARING");
+            recognizing = true;
+            androidStartListeningCalls++;
+            if (autoLanguage) autoSwitchRequestedCount++;
+            if (continuation) continuationRestarts++;
+            recognizer.startListening(intent);
+
+            if (continuation) {
+                armContinuationRelease();
+            }
+        }
+
+        private void scheduleContinuationRestart() {
+            if (!allowContinuation) {
+                setStateQuiet("IDLE");
+                return;
+            }
+
+            final long generation = ++continuationGeneration;
+            MAIN.postDelayed(
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!allowContinuation || continuationGeneration != generation) {
+                            return;
+                        }
+                        try {
+                            startRecognizerSessionOnMain(true);
+                        } catch (Throwable t) {
+                            recognizing = false;
+                            publishError(-1005, describe(t));
+                        }
+                    }
+                },
+                CONTINUATION_RESTART_DELAY_MS
+            );
+        }
+
+        private void armContinuationRelease() {
+            continuationArmed = true;
+            continuationSpeechActive = false;
+            final long generation = ++continuationGeneration;
+
+            MAIN.postDelayed(
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!allowContinuation
+                            || !continuationArmed
+                            || continuationGeneration != generation) {
+                            return;
+                        }
+
+                        continuationArmed = false;
+                        continuationReleaseTimeouts++;
+
+                        if (recognizer != null && recognizing) {
+                            markExpectedClientErrorFromCancel();
+                            try { recognizer.cancel(); } catch (Throwable ignored) {}
+                        }
+
+                        recognizing = false;
+                        continuationSpeechActive = false;
+                        setFlowQuiet(volumeFlow, Float.valueOf(0f));
+                        setStateQuiet("IDLE");
+                    }
+                },
+                CONTINUATION_HOLD_MS
+            );
+        }
+
+        private void noteContinuationSpeechBeginning() {
+            if (turnBuffer.length() == 0) return;
+
+            if (continuationArmed) {
+                continuationArmed = false;
+                continuationGeneration++;
+                continuationBegins++;
+            }
+
+            continuationSpeechActive = true;
+            publishStableKeepAlive(true);
+        }
+
+        private void publishStableKeepAlive(boolean force) {
+            if (turnBuffer.length() == 0) return;
+
+            long now = SystemClock.elapsedRealtime();
+            if (!force && now - lastKeepAliveAtMs < KEEPALIVE_MIN_INTERVAL_MS) {
+                return;
+            }
+
+            lastKeepAliveAtMs = now;
+            keepAliveToggle = !keepAliveToggle;
+            float confidence = keepAliveToggle ? 0.91f : 0.92f;
+
+            setFlowQuiet(
+                resultFlow,
+                newRecognitionResultQuiet(turnBuffer.toString(), false, confidence)
+            );
+            keepAlivePublishes++;
+        }
+
+        private String appendStableSegment(String segment) {
+            String clean = segment == null ? "" : segment.trim();
+            if (clean.isEmpty()) return turnBuffer.toString();
+
+            if (turnBuffer.length() > 0) {
+                char last = turnBuffer.charAt(turnBuffer.length() - 1);
+                char first = clean.charAt(0);
+
+                if (!Character.isWhitespace(last)
+                    && !isLeadingPunctuation(first)) {
+                    turnBuffer.append(' ');
+                }
+            }
+
+            turnBuffer.append(clean);
+            return turnBuffer.toString();
+        }
+
+        private boolean isLeadingPunctuation(char c) {
+            return c == ',' || c == '.' || c == ':' || c == ';'
+                || c == '!' || c == '?' || c == ')' || c == ']'
+                || c == '}' || c == '，' || c == '。' || c == '：'
+                || c == '；' || c == '！' || c == '？';
+        }
+
         private boolean stopRecognition() {
+            allowContinuation = false;
+            continuationArmed = false;
+            continuationSpeechActive = false;
+            continuationGeneration++;
+
             try {
                 Boolean ok = runOnMainSync(() -> {
                     if (recognizer != null && recognizing) {
@@ -1412,6 +1592,12 @@ public final class AndroidSpeechServiceInjector {
         }
 
         private void cancelRecognition() {
+            allowContinuation = false;
+            continuationArmed = false;
+            continuationSpeechActive = false;
+            continuationGeneration++;
+            turnBuffer.setLength(0);
+
             try {
                 runOnMainSync(() -> {
                     if (recognizer != null) {
@@ -1429,6 +1615,12 @@ public final class AndroidSpeechServiceInjector {
         }
 
         void shutdown() {
+            allowContinuation = false;
+            continuationArmed = false;
+            continuationSpeechActive = false;
+            continuationGeneration++;
+            turnBuffer.setLength(0);
+
             try {
                 runOnMainSync(() -> {
                     recognizing = false;
@@ -1482,6 +1674,18 @@ public final class AndroidSpeechServiceInjector {
             o.put("lastErrorMessage", lastErrorMessage);
             o.put("recognitionStarts", recognitionStarts);
             o.put("finalResults", finalResults);
+            o.put("androidStartListeningCalls", androidStartListeningCalls);
+            o.put("continuationEnabled", true);
+            o.put("continuationHoldMs", CONTINUATION_HOLD_MS);
+            o.put("continuationRestartDelayMs", CONTINUATION_RESTART_DELAY_MS);
+            o.put("continuationRestarts", continuationRestarts);
+            o.put("continuationBegins", continuationBegins);
+            o.put("continuationReleaseTimeouts", continuationReleaseTimeouts);
+            o.put("suppressedContinuationEndErrors", suppressedContinuationEndErrors);
+            o.put("keepAlivePublishes", keepAlivePublishes);
+            o.put("turnBuffer", turnBuffer.toString());
+            o.put("formattingRequested", Build.VERSION.SDK_INT >= 33);
+            o.put("formattingMode", Build.VERSION.SDK_INT >= 33 ? "QUALITY" : "UNAVAILABLE");
             o.put("suppressedExpectedClientErrors", suppressedExpectedClientErrors);
         }
 
@@ -1505,6 +1709,7 @@ public final class AndroidSpeechServiceInjector {
                     @Override
                     public void onBeginningOfSpeech() {
                         recognizing = true;
+                        noteContinuationSpeechBeginning();
                         setStateQuiet("RECOGNIZING");
                     }
 
@@ -1514,6 +1719,10 @@ public final class AndroidSpeechServiceInjector {
                         if (normalized < 0f) normalized = 0f;
                         if (normalized > 1f) normalized = 1f;
                         setFlowQuiet(volumeFlow, Float.valueOf(normalized));
+
+                        if (continuationSpeechActive) {
+                            publishStableKeepAlive(false);
+                        }
                     }
 
                     @Override
@@ -1521,6 +1730,7 @@ public final class AndroidSpeechServiceInjector {
 
                     @Override
                     public void onEndOfSpeech() {
+                        continuationSpeechActive = false;
                         setStateQuiet("PROCESSING");
                     }
 
@@ -1532,7 +1742,23 @@ public final class AndroidSpeechServiceInjector {
                             return;
                         }
 
+                        if (turnBuffer.length() > 0
+                            && allowContinuation
+                            && (error == SpeechRecognizer.ERROR_NO_MATCH
+                                || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)) {
+                            suppressedContinuationEndErrors++;
+                            recognizing = false;
+                            continuationArmed = false;
+                            continuationSpeechActive = false;
+                            continuationGeneration++;
+                            setFlowQuiet(volumeFlow, Float.valueOf(0f));
+                            setStateQuiet("IDLE");
+                            return;
+                        }
+
                         recognizing = false;
+                        continuationArmed = false;
+                        continuationSpeechActive = false;
                         setFlowQuiet(volumeFlow, Float.valueOf(0f));
                         publishError(error, recognitionErrorMessage(error));
                     }
@@ -1594,28 +1820,38 @@ public final class AndroidSpeechServiceInjector {
                     public void onResults(Bundle results) {
                         String text = firstResult(results);
                         recognizing = false;
+                        continuationSpeechActive = false;
                         setFlowQuiet(volumeFlow, Float.valueOf(0f));
+
                         if (!text.isEmpty()) {
-                            lastFinalText = text;
+                            String cumulative = appendStableSegment(text);
+                            lastFinalText = cumulative;
                             finalResults++;
                             setFlowQuiet(
                                 resultFlow,
-                                newRecognitionResultQuiet(text, true, 1f)
+                                newRecognitionResultQuiet(cumulative, true, 1f)
                             );
                         }
-                        setStateQuiet("IDLE");
+
+                        if (allowContinuation && turnBuffer.length() > 0) {
+                            scheduleContinuationRestart();
+                        } else {
+                            setStateQuiet("IDLE");
+                        }
                     }
 
                     @Override
                     public void onPartialResults(Bundle partialResults) {
                         String text = firstResult(partialResults);
                         if (!text.isEmpty()) {
-                            // Android SpeechRecognizer revises partial hypotheses.
-                            // Operit's stock SpeechInteractionManager assumes mostly
-                            // monotonic partials and otherwise appends the previous
-                            // hypothesis into accumulatedText. Keep the latest partial
-                            // only for diagnostics and publish only the final result.
+                            // Keep vendor partials diagnostic-only because they can revise
+                            // earlier words. Once a stable segment exists, publish only the
+                            // stable cumulative prefix as a keepalive so Operit's 2s silence
+                            // timer does not fire while the user is actively continuing.
                             lastPartialText = text;
+                            if (continuationSpeechActive && turnBuffer.length() > 0) {
+                                publishStableKeepAlive(false);
+                            }
                         }
                     }
 
