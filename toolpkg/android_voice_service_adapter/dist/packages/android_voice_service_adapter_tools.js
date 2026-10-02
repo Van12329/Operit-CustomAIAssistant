@@ -12,7 +12,7 @@
     {
       "name": "android_voice_service_status",
       "description": {
-        "en": "Read VoiceServiceFactory injection and multilingual TTS routing status.",
+        "en": "Read VoiceServiceFactory injection, multilingual TTS routing and duplex coordination status.",
         "zh": "Read Android VoiceService adapter status."
       },
       "parameters": []
