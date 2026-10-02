@@ -1,0 +1,60 @@
+name: Build Android VoiceService Adapter
+
+on:
+  push:
+    branches:
+      - feature/android-voice-service-adapter-010
+    paths:
+      - .github/workflows/android-voice-service-adapter.yml
+      - toolpkg/android_voice_service_adapter/**
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
+        with:
+          packages: ''
+      - name: Install SDK
+        run: sdkmanager --install "platforms;android-36" "build-tools;35.0.0"
+      - name: Compile helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="toolpkg/android_voice_service_adapter"
+          mkdir -p "$ROOT/build/classes" "$ROOT/build/dex" "$ROOT/resources"
+          mapfile -t java_files < <(find "$ROOT/helper-src" -name '*.java' -print)
+          javac -source 8 -target 8 \
+            -cp "$ANDROID_HOME/platforms/android-36/android.jar" \
+            -d "$ROOT/build/classes" \
+            "${java_files[@]}"
+          mapfile -t class_files < <(find "$ROOT/build/classes" -name '*.class' -print)
+          "$ANDROID_HOME/build-tools/35.0.0/d8" \
+            --lib "$ANDROID_HOME/platforms/android-36/android.jar" \
+            --output "$ROOT/build/dex" \
+            "${class_files[@]}"
+          cp "$ROOT/build/dex/classes.dex" "$ROOT/resources/android-voice-service-adapter-helper.dex"
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="toolpkg/android_voice_service_adapter"
+          OUT="Android-VoiceService-Adapter-v0.1.0.toolpkg"
+          (cd "$ROOT" && zip -qr "$GITHUB_WORKSPACE/$OUT" manifest.json dist resources/android-voice-service-adapter-helper.dex)
+          unzip -l "$OUT"
+          sha256sum "$OUT"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: Android-VoiceService-Adapter-v0.1.0
+          path: Android-VoiceService-Adapter-v0.1.0.toolpkg
+          if-no-files-found: error
+          retention-days: 14
