@@ -2,10 +2,13 @@ package com.operit.speech.adapter;
 
 import android.content.Context;
 import android.content.Intent;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.speech.RecognitionListener;
+import android.speech.RecognitionSupport;
+import android.speech.RecognitionSupportCallback;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 
@@ -18,9 +21,11 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
@@ -52,6 +57,13 @@ public final class AndroidSpeechServiceInjector {
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final Object LOCK = new Object();
+    private static final Executor DIRECT_EXECUTOR =
+        new Executor() {
+            @Override
+            public void execute(Runnable command) {
+                command.run();
+            }
+        };
 
     private static Context app;
     private static Field instanceField;
@@ -203,7 +215,7 @@ public final class AndroidSpeechServiceInjector {
                 o.put("installed", installed);
                 o.put("factoryPointsToProxy", factoryPointsToProxy);
                 o.put("configuredLanguage", configured);
-                o.put("supportedLanguages", "ru-RU,es-AR,es-ES");
+                o.put("configuredLocales", "ru-RU,es-AR,es-ES");
                 o.put("partialPolicy", "FINAL_ONLY_TO_OPERIT");
                 o.put("installError", installError);
                 o.put(
@@ -228,6 +240,265 @@ public final class AndroidSpeechServiceInjector {
             }
         }
         return o.toString();
+    }
+
+    public static String checkRecognitionSupportJson(Context context, String requested) {
+        JSONObject out = new JSONObject();
+        SpeechRecognizer probe = null;
+
+        try {
+            Context a = context.getApplicationContext();
+            String language = normalizeLanguage(requested);
+            if (language == null) {
+                out.put("ok", false);
+                out.put("error", "Unsupported adapter locale: " + String.valueOf(requested));
+                return out.toString();
+            }
+
+            out.put("ok", false);
+            out.put("requestedLanguage", language);
+            out.put("preferOffline", true);
+            out.put("apiLevel", Build.VERSION.SDK_INT);
+
+            if (Build.VERSION.SDK_INT < 33) {
+                out.put("error", "RecognitionSupport requires Android API 33+");
+                return out.toString();
+            }
+
+            final SpeechRecognizer created =
+                runOnMainSync(
+                    new MainCallable<SpeechRecognizer>() {
+                        @Override
+                        public SpeechRecognizer call() {
+                            return SpeechRecognizer.createSpeechRecognizer(a);
+                        }
+                    },
+                    2500L
+                );
+            probe = created;
+
+            final CountDownLatch latch = new CountDownLatch(1);
+            final AtomicReference<RecognitionSupport> supportRef = new AtomicReference<>();
+            final AtomicReference<Integer> errorRef = new AtomicReference<>();
+
+            final Intent intent = buildRecognitionIntent(language, true, false);
+
+            runOnMainSync(
+                new MainCallable<Boolean>() {
+                    @Override
+                    public Boolean call() {
+                        created.checkRecognitionSupport(
+                            intent,
+                            DIRECT_EXECUTOR,
+                            new RecognitionSupportCallback() {
+                                @Override
+                                public void onSupportResult(RecognitionSupport recognitionSupport) {
+                                    supportRef.set(recognitionSupport);
+                                    latch.countDown();
+                                }
+
+                                @Override
+                                public void onError(int error) {
+                                    errorRef.set(error);
+                                    latch.countDown();
+                                }
+                            }
+                        );
+                        return Boolean.TRUE;
+                    }
+                },
+                2500L
+            );
+
+            if (!latch.await(6000L, TimeUnit.MILLISECONDS)) {
+                out.put("error", "RecognitionSupport callback timeout");
+                return out.toString();
+            }
+
+            Integer supportError = errorRef.get();
+            if (supportError != null) {
+                out.put("supportErrorCode", supportError.intValue());
+                out.put("supportErrorName", recognitionErrorName(supportError.intValue()));
+                out.put("error", "RecognitionSupport query failed");
+                return out.toString();
+            }
+
+            RecognitionSupport support = supportRef.get();
+            if (support == null) {
+                out.put("error", "RecognitionSupport callback returned no data");
+                return out.toString();
+            }
+
+            List<String> installed = support.getInstalledOnDeviceLanguages();
+            List<String> pending = support.getPendingOnDeviceLanguages();
+            List<String> supported = support.getSupportedOnDeviceLanguages();
+            List<String> online = support.getOnlineLanguages();
+
+            out.put("installedOnDeviceLanguages", new JSONArray(installed));
+            out.put("pendingOnDeviceLanguages", new JSONArray(pending));
+            out.put("supportedOnDeviceLanguages", new JSONArray(supported));
+            out.put("onlineLanguages", new JSONArray(online));
+
+            out.put("requestedInstalledOnDevice", containsLanguage(installed, language));
+            out.put("requestedPendingOnDevice", containsLanguage(pending, language));
+            out.put("requestedSupportedOnDevice", containsLanguage(supported, language));
+            out.put("requestedOnline", containsLanguage(online, language));
+            out.put("ok", true);
+        } catch (Throwable t) {
+            try {
+                out.put("ok", false);
+                out.put("error", describe(t));
+            } catch (Throwable ignored) {
+            }
+        } finally {
+            final SpeechRecognizer toDestroy = probe;
+            if (toDestroy != null) {
+                try {
+                    runOnMainSync(
+                        new MainCallable<Boolean>() {
+                            @Override
+                            public Boolean call() {
+                                toDestroy.destroy();
+                                return Boolean.TRUE;
+                            }
+                        },
+                        2500L
+                    );
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+
+        return out.toString();
+    }
+
+    public static String requestModelDownloadJson(Context context, String requested) {
+        JSONObject out = new JSONObject();
+        SpeechRecognizer probe = null;
+
+        try {
+            Context a = context.getApplicationContext();
+            String language = normalizeLanguage(requested);
+            if (language == null) {
+                out.put("ok", false);
+                out.put("error", "Unsupported adapter locale: " + String.valueOf(requested));
+                return out.toString();
+            }
+
+            out.put("requestedLanguage", language);
+            out.put("preferOffline", true);
+            out.put("apiLevel", Build.VERSION.SDK_INT);
+
+            if (Build.VERSION.SDK_INT < 33) {
+                out.put("ok", false);
+                out.put("error", "Model download requires Android API 33+");
+                return out.toString();
+            }
+
+            final SpeechRecognizer created =
+                runOnMainSync(
+                    new MainCallable<SpeechRecognizer>() {
+                        @Override
+                        public SpeechRecognizer call() {
+                            return SpeechRecognizer.createSpeechRecognizer(a);
+                        }
+                    },
+                    2500L
+                );
+            probe = created;
+            final Intent intent = buildRecognitionIntent(language, true, false);
+
+            runOnMainSync(
+                new MainCallable<Boolean>() {
+                    @Override
+                    public Boolean call() {
+                        created.triggerModelDownload(intent);
+                        return Boolean.TRUE;
+                    }
+                },
+                2500L
+            );
+
+            out.put("ok", true);
+            out.put("requested", true);
+            out.put(
+                "nextStep",
+                "Re-run android_speech_service_check_support after any download/prompt completes."
+            );
+        } catch (Throwable t) {
+            try {
+                out.put("ok", false);
+                out.put("error", describe(t));
+            } catch (Throwable ignored) {
+            }
+        } finally {
+            final SpeechRecognizer toDestroy = probe;
+            if (toDestroy != null) {
+                try {
+                    runOnMainSync(
+                        new MainCallable<Boolean>() {
+                            @Override
+                            public Boolean call() {
+                                toDestroy.destroy();
+                                return Boolean.TRUE;
+                            }
+                        },
+                        2500L
+                    );
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+
+        return out.toString();
+    }
+
+    private static Intent buildRecognitionIntent(
+        String language,
+        boolean preferOffline,
+        boolean partialResults
+    ) {
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(
+            RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+        );
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, language);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, language);
+        intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, preferOffline);
+        intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, partialResults);
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+        return intent;
+    }
+
+    private static boolean containsLanguage(List<String> values, String language) {
+        if (values == null || language == null) return false;
+        for (String value : values) {
+            if (value != null && value.equalsIgnoreCase(language)) return true;
+        }
+        return false;
+    }
+
+    private static String recognitionErrorName(int code) {
+        switch (code) {
+            case SpeechRecognizer.ERROR_AUDIO: return "ERROR_AUDIO";
+            case SpeechRecognizer.ERROR_CLIENT: return "ERROR_CLIENT";
+            case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS:
+                return "ERROR_INSUFFICIENT_PERMISSIONS";
+            case SpeechRecognizer.ERROR_NETWORK: return "ERROR_NETWORK";
+            case SpeechRecognizer.ERROR_NETWORK_TIMEOUT: return "ERROR_NETWORK_TIMEOUT";
+            case SpeechRecognizer.ERROR_NO_MATCH: return "ERROR_NO_MATCH";
+            case SpeechRecognizer.ERROR_RECOGNIZER_BUSY: return "ERROR_RECOGNIZER_BUSY";
+            case SpeechRecognizer.ERROR_SERVER: return "ERROR_SERVER";
+            case SpeechRecognizer.ERROR_SPEECH_TIMEOUT: return "ERROR_SPEECH_TIMEOUT";
+            case SpeechRecognizer.ERROR_SERVER_DISCONNECTED:
+                return "ERROR_SERVER_DISCONNECTED";
+            case SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED:
+                return "ERROR_LANGUAGE_NOT_SUPPORTED";
+            case SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE:
+                return "ERROR_LANGUAGE_UNAVAILABLE";
+            default: return "ERROR_" + code;
+        }
     }
 
     private static String getConfiguredLanguage(Context context) {
@@ -405,22 +676,7 @@ public final class AndroidSpeechServiceInjector {
                     }
 
                     Intent intent =
-                        new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-                    intent.putExtra(
-                        RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-                    );
-                    intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, actual);
-                    intent.putExtra(
-                        RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE,
-                        actual
-                    );
-                    intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
-                    intent.putExtra(
-                        RecognizerIntent.EXTRA_PARTIAL_RESULTS,
-                        partialResults
-                    );
-                    intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+                        buildRecognitionIntent(actual, true, partialResults);
 
                     setState("PREPARING");
                     recognizing = true;
@@ -604,22 +860,7 @@ public final class AndroidSpeechServiceInjector {
         }
 
         private String recognitionErrorMessage(int code) {
-            switch (code) {
-                case SpeechRecognizer.ERROR_AUDIO: return "ERROR_AUDIO";
-                case SpeechRecognizer.ERROR_CLIENT: return "ERROR_CLIENT";
-                case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS:
-                    return "ERROR_INSUFFICIENT_PERMISSIONS";
-                case SpeechRecognizer.ERROR_NETWORK: return "ERROR_NETWORK";
-                case SpeechRecognizer.ERROR_NETWORK_TIMEOUT:
-                    return "ERROR_NETWORK_TIMEOUT";
-                case SpeechRecognizer.ERROR_NO_MATCH: return "ERROR_NO_MATCH";
-                case SpeechRecognizer.ERROR_RECOGNIZER_BUSY:
-                    return "ERROR_RECOGNIZER_BUSY";
-                case SpeechRecognizer.ERROR_SERVER: return "ERROR_SERVER";
-                case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
-                    return "ERROR_SPEECH_TIMEOUT";
-                default: return "ERROR_" + code;
-            }
+            return recognitionErrorName(code);
         }
 
         private Object enumState(String name) throws Exception {
