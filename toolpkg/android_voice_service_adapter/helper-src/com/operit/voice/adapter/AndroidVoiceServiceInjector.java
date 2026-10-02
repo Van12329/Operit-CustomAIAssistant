@@ -3,7 +3,8 @@ package com.operit.voice.adapter;
 import android.content.Context;
 import android.content.SharedPreferences;
 import java.lang.reflect.*;
-import java.util.Map;
+import java.util.ArrayDeque;
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 public final class AndroidVoiceServiceInjector {
@@ -28,14 +29,23 @@ public final class AndroidVoiceServiceInjector {
     private static boolean installed;
     private static String installError = "";
 
+    private static final int SPEAK_HISTORY_LIMIT = 8;
+    private static final ArrayDeque<String> recentRawSpeakPreviews = new ArrayDeque<>();
+    private static final ArrayDeque<String> recentSanitizedSpeakPreviews = new ArrayDeque<>();
+
     private static long routedSpeakCount;
     private static long russianSpeakCount;
     private static long spanishSpeakCount;
     private static long passthroughSpeakCount;
+    private static long sanitizedSpeakCount;
+    private static long removedMarkdownTokenCount;
 
     private static String lastConfiguredSpeechLanguage = "";
     private static String lastRoute = "";
     private static String lastTextPreview = "";
+    private static String lastRawTextPreview = "";
+    private static String lastSanitizedTextPreview = "";
+    private static int lastRemovedMarkdownTokenCount;
     private static String lastAppliedVoiceId = "";
     private static String lastAppliedLocaleTag = "";
     private static String lastRoutingError = "";
@@ -102,8 +112,9 @@ public final class AndroidVoiceServiceInjector {
                             }
 
                             if ("speak".equals(name) && args != null && args.length > 0) {
-                                String text = args[0] == null ? "" : String.valueOf(args[0]);
-                                routeBeforeSpeak(delegate, text);
+                                String rawText = args[0] == null ? "" : String.valueOf(args[0]);
+                                String preparedText = prepareTextBeforeSpeak(delegate, rawText);
+                                args[0] = preparedText;
                             }
 
                             try {
@@ -132,10 +143,25 @@ public final class AndroidVoiceServiceInjector {
         }
     }
 
-    private static void routeBeforeSpeak(Object delegate, String text) {
+    private static String prepareTextBeforeSpeak(Object delegate, String rawText) {
         synchronized (LOCK) {
             routedSpeakCount++;
-            lastTextPreview = preview(text);
+            lastRawTextPreview = preview(rawText);
+
+            SanitizeResult sanitizeResult = sanitizeForSpeech(rawText);
+            String text = sanitizeResult.text;
+
+            lastSanitizedTextPreview = preview(text);
+            lastTextPreview = lastSanitizedTextPreview;
+            lastRemovedMarkdownTokenCount = sanitizeResult.removedTokenCount;
+            if (sanitizeResult.removedTokenCount > 0) {
+                sanitizedSpeakCount++;
+                removedMarkdownTokenCount += sanitizeResult.removedTokenCount;
+            }
+
+            appendHistory(recentRawSpeakPreviews, lastRawTextPreview);
+            appendHistory(recentSanitizedSpeakPreviews, lastSanitizedTextPreview);
+
             lastRoutingError = "";
 
             try {
@@ -156,18 +182,16 @@ public final class AndroidVoiceServiceInjector {
                     writeOptionalField(delegate, "currentLocaleTag", russianLocaleTag);
                     lastAppliedLocaleTag = russianLocaleTag;
                     russianSpeakCount++;
-                    return;
+                    return text;
                 }
 
                 if ("es-US".equals(route)) {
-                    // Deliberately clear fixed voice selection. SimpleVoiceProvider will call
-                    // setLanguage(es-US) and let Google TTS choose its normal local es-US voice.
                     writeOptionalField(delegate, "currentVoiceId", null);
                     writeOptionalField(delegate, "currentLocaleTag", "es-US");
                     lastAppliedVoiceId = "";
                     lastAppliedLocaleTag = "es-US";
                     spanishSpeakCount++;
-                    return;
+                    return text;
                 }
 
                 passthroughSpeakCount++;
@@ -175,6 +199,69 @@ public final class AndroidVoiceServiceInjector {
                 passthroughSpeakCount++;
                 lastRoutingError = describe(t);
             }
+
+            return text;
+        }
+    }
+
+    private static SanitizeResult sanitizeForSpeech(String text) {
+        if (text == null || text.isEmpty()) {
+            return new SanitizeResult("", 0);
+        }
+
+        String cleaned = text;
+        int removed = 0;
+        String tick = Character.toString((char) 96);
+        String[] tokens = new String[] {
+            "***", "___", "**", "__", "~~", tick + tick + tick, tick
+        };
+
+        for (String token : tokens) {
+            int count = countOccurrences(cleaned, token);
+            if (count > 0) {
+                cleaned = cleaned.replace(token, "");
+                removed += count;
+            }
+        }
+
+        return new SanitizeResult(cleaned, removed);
+    }
+
+    private static int countOccurrences(String text, String token) {
+        if (text == null || text.isEmpty() || token == null || token.isEmpty()) return 0;
+        int count = 0;
+        int from = 0;
+        while (true) {
+            int idx = text.indexOf(token, from);
+            if (idx < 0) break;
+            count++;
+            from = idx + token.length();
+        }
+        return count;
+    }
+
+    private static void appendHistory(ArrayDeque<String> history, String value) {
+        history.addLast(value == null ? "" : value);
+        while (history.size() > SPEAK_HISTORY_LIMIT) {
+            history.removeFirst();
+        }
+    }
+
+    private static JSONArray historyJson(ArrayDeque<String> history) {
+        JSONArray out = new JSONArray();
+        for (String value : history) {
+            out.put(value);
+        }
+        return out;
+    }
+
+    private static final class SanitizeResult {
+        final String text;
+        final int removedTokenCount;
+
+        SanitizeResult(String text, int removedTokenCount) {
+            this.text = text;
+            this.removedTokenCount = removedTokenCount;
         }
     }
 
@@ -258,10 +345,17 @@ public final class AndroidVoiceServiceInjector {
                 out.put("russianSpeakCount", russianSpeakCount);
                 out.put("spanishSpeakCount", spanishSpeakCount);
                 out.put("passthroughSpeakCount", passthroughSpeakCount);
+                out.put("sanitizedSpeakCount", sanitizedSpeakCount);
+                out.put("removedMarkdownTokenCount", removedMarkdownTokenCount);
 
                 out.put("lastConfiguredSpeechLanguage", lastConfiguredSpeechLanguage);
                 out.put("lastRoute", lastRoute);
                 out.put("lastTextPreview", lastTextPreview);
+                out.put("lastRawTextPreview", lastRawTextPreview);
+                out.put("lastSanitizedTextPreview", lastSanitizedTextPreview);
+                out.put("lastRemovedMarkdownTokenCount", lastRemovedMarkdownTokenCount);
+                out.put("recentRawSpeakPreviews", historyJson(recentRawSpeakPreviews));
+                out.put("recentSanitizedSpeakPreviews", historyJson(recentSanitizedSpeakPreviews));
                 out.put("lastAppliedVoiceId", lastAppliedVoiceId);
                 out.put("lastAppliedLocaleTag", lastAppliedLocaleTag);
                 out.put("lastRoutingError", lastRoutingError);
