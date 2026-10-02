@@ -12,7 +12,7 @@
     {
       "name": "android_speech_service_status",
       "description": {
-        "en": "Read injection, language, recognition and last-result status.",
+        "en": "Read injection, AUTO language switching, continuation bridging, formatting, recognition and last-result status.",
         "zh": "Read Android SpeechService adapter status."
       },
       "parameters": []
