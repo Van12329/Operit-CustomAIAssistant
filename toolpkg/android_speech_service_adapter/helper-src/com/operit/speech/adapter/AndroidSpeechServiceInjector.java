@@ -1097,6 +1097,9 @@ public final class AndroidSpeechServiceInjector {
 
         private SpeechRecognizer recognizer;
         private boolean recognizing;
+        private boolean suppressExpectedClientError;
+        private long suppressClientErrorGeneration;
+        private long suppressedExpectedClientErrors;
         private String currentStateName = "UNINITIALIZED";
         private String lastRequestedLanguage = "";
         private String lastActualLanguage = "";
@@ -1273,6 +1276,7 @@ public final class AndroidSpeechServiceInjector {
             try {
                 runOnMainSync(() -> {
                     if (recognizer != null) {
+                        markExpectedClientErrorFromCancel();
                         try { recognizer.cancel(); } catch (Throwable ignored) {}
                     }
                     recognizing = false;
@@ -1290,6 +1294,7 @@ public final class AndroidSpeechServiceInjector {
                 runOnMainSync(() -> {
                     recognizing = false;
                     if (recognizer != null) {
+                        markExpectedClientErrorFromCancel();
                         try { recognizer.cancel(); } catch (Throwable ignored) {}
                         try { recognizer.destroy(); } catch (Throwable ignored) {}
                         recognizer = null;
@@ -1319,6 +1324,7 @@ public final class AndroidSpeechServiceInjector {
             o.put("lastErrorMessage", lastErrorMessage);
             o.put("recognitionStarts", recognitionStarts);
             o.put("finalResults", finalResults);
+            o.put("suppressedExpectedClientErrors", suppressedExpectedClientErrors);
         }
 
         private void ensureRecognizerOnMain() throws Exception {
@@ -1362,6 +1368,12 @@ public final class AndroidSpeechServiceInjector {
 
                     @Override
                     public void onError(int error) {
+                        if (error == SpeechRecognizer.ERROR_CLIENT
+                            && consumeExpectedClientErrorFromCancel()) {
+                            suppressedExpectedClientErrors++;
+                            return;
+                        }
+
                         recognizing = false;
                         setFlowQuiet(volumeFlow, Float.valueOf(0f));
                         publishError(error, recognitionErrorMessage(error));
@@ -1418,6 +1430,29 @@ public final class AndroidSpeechServiceInjector {
                 newRecognitionErrorQuiet(code, lastErrorMessage)
             );
             setStateQuiet("ERROR");
+        }
+
+        private void markExpectedClientErrorFromCancel() {
+            suppressExpectedClientError = true;
+            final long generation = ++suppressClientErrorGeneration;
+
+            MAIN.postDelayed(
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        if (suppressClientErrorGeneration == generation) {
+                            suppressExpectedClientError = false;
+                        }
+                    }
+                },
+                2000L
+            );
+        }
+
+        private boolean consumeExpectedClientErrorFromCancel() {
+            if (!suppressExpectedClientError) return false;
+            suppressExpectedClientError = false;
+            return true;
         }
 
         private String recognitionErrorMessage(int code) {
