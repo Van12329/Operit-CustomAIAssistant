@@ -1,10 +1,13 @@
 package com.operit.speech.adapter;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.speech.ModelDownloadListener;
 import android.speech.RecognitionListener;
@@ -231,7 +234,7 @@ public final class AndroidSpeechServiceInjector {
                 o.put("installed", installed);
                 o.put("factoryPointsToProxy", factoryPointsToProxy);
                 o.put("configuredLanguage", configured);
-                o.put("configuredLocales", "ru-RU,es-AR,es-ES");
+                o.put("configuredLocales", "ru-RU,es-US,es-419,es-AR,es-ES");
                 o.put("partialPolicy", "FINAL_ONLY_TO_OPERIT");
                 o.put("installError", installError);
                 o.put(
@@ -256,6 +259,110 @@ public final class AndroidSpeechServiceInjector {
             }
         }
         return o.toString();
+    }
+
+    public static String getVoiceLanguageDetailsJson(Context context) {
+        JSONObject out = new JSONObject();
+        HandlerThread thread = null;
+
+        try {
+            final Context a = context.getApplicationContext();
+            final Intent detailsIntent = RecognizerIntent.getVoiceDetailsIntent(a);
+
+            out.put("probe", "VOICE_LANGUAGE_DETAILS");
+            out.put("microphoneUsed", false);
+            out.put("downloadRequested", false);
+
+            if (detailsIntent == null) {
+                out.put("ok", false);
+                out.put("voiceDetailsIntentAvailable", false);
+                out.put("error", "RecognizerIntent.getVoiceDetailsIntent returned null");
+                return out.toString();
+            }
+
+            out.put("voiceDetailsIntentAvailable", true);
+            if (detailsIntent.getComponent() != null) {
+                out.put("receiverComponent", detailsIntent.getComponent().flattenToShortString());
+            }
+
+            final CountDownLatch latch = new CountDownLatch(1);
+            final AtomicReference<Bundle> extrasRef = new AtomicReference<>();
+            final AtomicReference<Integer> resultCodeRef = new AtomicReference<>();
+
+            thread = new HandlerThread("SpeechLanguageDetailsProbe");
+            thread.start();
+            Handler receiverHandler = new Handler(thread.getLooper());
+
+            BroadcastReceiver receiver =
+                new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context receiverContext, Intent intent) {
+                        resultCodeRef.set(getResultCode());
+                        Bundle extras = getResultExtras(true);
+                        extrasRef.set(extras == null ? new Bundle() : new Bundle(extras));
+                        latch.countDown();
+                    }
+                };
+
+            a.sendOrderedBroadcast(
+                detailsIntent,
+                null,
+                receiver,
+                receiverHandler,
+                0,
+                null,
+                null
+            );
+
+            if (!latch.await(6000L, TimeUnit.MILLISECONDS)) {
+                out.put("ok", false);
+                out.put("error", "Voice language details broadcast timeout");
+                return out.toString();
+            }
+
+            Bundle extras = extrasRef.get();
+            if (extras == null) extras = new Bundle();
+
+            List<String> languages =
+                extras.getStringArrayList(RecognizerIntent.EXTRA_SUPPORTED_LANGUAGES);
+            String preference =
+                extras.getString(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE);
+
+            out.put(
+                "resultCode",
+                resultCodeRef.get() == null ? JSONObject.NULL : resultCodeRef.get()
+            );
+            out.put(
+                "languagePreference",
+                preference == null ? JSONObject.NULL : preference
+            );
+            out.put(
+                "reportedSupportedLanguages",
+                languages == null ? new JSONArray() : new JSONArray(languages)
+            );
+            out.put("reportedLanguageCount", languages == null ? 0 : languages.size());
+            out.put("hasEsUS", containsLanguage(languages, "es-US"));
+            out.put("hasEs419", containsLanguage(languages, "es-419"));
+            out.put("hasEsAR", containsLanguage(languages, "es-AR"));
+            out.put("hasEsES", containsLanguage(languages, "es-ES"));
+            out.put("hasRuRU", containsLanguage(languages, "ru-RU"));
+            out.put("ok", true);
+        } catch (Throwable t) {
+            try {
+                out.put("ok", false);
+                out.put("error", describe(t));
+            } catch (Throwable ignored) {
+            }
+        } finally {
+            if (thread != null) {
+                try {
+                    thread.quitSafely();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+
+        return out.toString();
     }
 
     public static String probeOnDeviceRecognitionJson(Context context, String requested) {
@@ -820,7 +927,9 @@ public final class AndroidSpeechServiceInjector {
         if (raw == null) return null;
         String v = raw.trim().replace('_', '-');
         if (v.equalsIgnoreCase("ru") || v.equalsIgnoreCase("ru-RU")) return "ru-RU";
-        if (v.equalsIgnoreCase("es") || v.equalsIgnoreCase("es-AR")) return "es-AR";
+        if (v.equalsIgnoreCase("es") || v.equalsIgnoreCase("es-US")) return "es-US";
+        if (v.equalsIgnoreCase("es-419")) return "es-419";
+        if (v.equalsIgnoreCase("es-AR")) return "es-AR";
         if (v.equalsIgnoreCase("es-ES")) return "es-ES";
         return null;
     }
@@ -937,7 +1046,7 @@ public final class AndroidSpeechServiceInjector {
             }
 
             if ("getSupportedLanguages".equals(name)) {
-                return Arrays.asList("ru-RU", "es-AR", "es-ES");
+                return Arrays.asList("ru-RU", "es-US", "es-419", "es-AR", "es-ES");
             }
 
             if ("recognize".equals(name)) {
