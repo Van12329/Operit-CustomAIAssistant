@@ -650,6 +650,148 @@ public final class AndroidSpeechServiceInjector {
         return out.toString();
     }
 
+    public static String requestOnDeviceModelDownloadJson(Context context, String requested) {
+        JSONObject out = new JSONObject();
+
+        try {
+            final Context a = context.getApplicationContext();
+            final String language = normalizeLanguage(requested);
+
+            out.put("probe", "ON_DEVICE_MODEL_DOWNLOAD");
+            out.put("requestedLanguage", language == null ? JSONObject.NULL : language);
+            out.put("apiLevel", Build.VERSION.SDK_INT);
+            out.put("microphoneUsed", false);
+            out.put("onDeviceRecognitionAvailable",
+                Build.VERSION.SDK_INT >= 31
+                    && SpeechRecognizer.isOnDeviceRecognitionAvailable(a)
+            );
+
+            if (language == null) {
+                out.put("ok", false);
+                out.put("error", "Unsupported adapter locale: " + String.valueOf(requested));
+                return out.toString();
+            }
+
+            if (Build.VERSION.SDK_INT < 31
+                || !SpeechRecognizer.isOnDeviceRecognitionAvailable(a)) {
+                out.put("ok", false);
+                out.put("error", "Dedicated on-device SpeechRecognizer is unavailable");
+                return out.toString();
+            }
+
+            synchronized (LOCK) {
+                if ("DOWNLOADING".equals(modelDownloadState)
+                    || "REQUESTED".equals(modelDownloadState)) {
+                    out.put("ok", false);
+                    out.put("error", "A model download request is already active.");
+                    appendModelDownloadStatus(out);
+                    return out.toString();
+                }
+            }
+
+            final Intent intent = buildRecognitionIntent(language, true, false);
+
+            runOnMainSync(
+                new MainCallable<Boolean>() {
+                    @Override
+                    public Boolean call() {
+                        destroyModelDownloadRecognizerOnMain();
+
+                        modelDownloadRecognizer =
+                            SpeechRecognizer.createOnDeviceSpeechRecognizer(a);
+                        modelDownloadLanguage = language;
+                        modelDownloadState = "REQUESTED";
+                        modelDownloadProgress = -1;
+                        modelDownloadErrorCode = 0;
+                        modelDownloadErrorName = "";
+                        modelDownloadUpdatedAtMs = System.currentTimeMillis();
+
+                        final SpeechRecognizer active = modelDownloadRecognizer;
+
+                        if (Build.VERSION.SDK_INT >= 34) {
+                            active.triggerModelDownload(
+                                intent,
+                                a.getMainExecutor(),
+                                new ModelDownloadListener() {
+                                    @Override
+                                    public void onProgress(int completedPercent) {
+                                        synchronized (LOCK) {
+                                            modelDownloadState = "DOWNLOADING";
+                                            modelDownloadProgress = completedPercent;
+                                            modelDownloadUpdatedAtMs =
+                                                System.currentTimeMillis();
+                                        }
+                                    }
+
+                                    @Override
+                                    public void onScheduled() {
+                                        synchronized (LOCK) {
+                                            modelDownloadState = "SCHEDULED";
+                                            modelDownloadUpdatedAtMs =
+                                                System.currentTimeMillis();
+                                        }
+                                        destroyModelDownloadRecognizerOnMain();
+                                    }
+
+                                    @Override
+                                    public void onSuccess() {
+                                        synchronized (LOCK) {
+                                            modelDownloadState = "SUCCESS";
+                                            modelDownloadProgress = 100;
+                                            modelDownloadErrorCode = 0;
+                                            modelDownloadErrorName = "";
+                                            modelDownloadUpdatedAtMs =
+                                                System.currentTimeMillis();
+                                        }
+                                        destroyModelDownloadRecognizerOnMain();
+                                    }
+
+                                    @Override
+                                    public void onError(int error) {
+                                        synchronized (LOCK) {
+                                            modelDownloadState = "ERROR";
+                                            modelDownloadErrorCode = error;
+                                            modelDownloadErrorName =
+                                                recognitionErrorName(error);
+                                            modelDownloadUpdatedAtMs =
+                                                System.currentTimeMillis();
+                                        }
+                                        destroyModelDownloadRecognizerOnMain();
+                                    }
+                                }
+                            );
+                        } else {
+                            active.triggerModelDownload(intent);
+                            modelDownloadState = "REQUESTED_UNOBSERVED";
+                            modelDownloadUpdatedAtMs = System.currentTimeMillis();
+                            destroyModelDownloadRecognizerOnMain();
+                        }
+
+                        return Boolean.TRUE;
+                    }
+                },
+                2500L
+            );
+
+            out.put("ok", true);
+            out.put("listenerEnabled", Build.VERSION.SDK_INT >= 34);
+            appendModelDownloadStatus(out);
+            out.put(
+                "nextStep",
+                "Call android_speech_service_model_download_status until SUCCESS/SCHEDULED/ERROR."
+            );
+        } catch (Throwable t) {
+            try {
+                out.put("ok", false);
+                out.put("error", describe(t));
+                appendModelDownloadStatus(out);
+            } catch (Throwable ignored) {
+            }
+        }
+
+        return out.toString();
+    }
+
     public static String requestModelDownloadJson(Context context, String requested) {
         JSONObject out = new JSONObject();
 
