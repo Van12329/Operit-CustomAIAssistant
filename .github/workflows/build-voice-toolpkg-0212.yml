@@ -1,0 +1,61 @@
+name: Build Voice ToolPkg v0.2.12
+on:
+  workflow_dispatch:
+  push:
+    branches: [toolpkg/voice-session-0.2.12]
+    paths:
+      - 'toolpkg/voice-session-v0.2.12/**'
+      - '.github/workflows/build-voice-toolpkg-0212.yml'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Android build tools
+        id: bt
+        shell: bash
+        run: |
+          set -euo pipefail
+          BT="$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          echo "dir=$ANDROID_HOME/build-tools/$BT" >> "$GITHUB_OUTPUT"
+          echo "android=$ANDROID_HOME/platforms/android-35/android.jar" >> "$GITHUB_OUTPUT"
+      - name: Compile helper classes
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=toolpkg/voice-session-v0.2.12
+          mkdir -p "$ROOT/voice/build/classes" "$ROOT/speech/build/classes"
+          javac -source 8 -target 8 -cp "${{ steps.bt.outputs.android }}" -d "$ROOT/voice/build/classes" $(find "$ROOT/voice/src" -name '*.java')
+          javac -source 8 -target 8 -cp "${{ steps.bt.outputs.android }}" -d "$ROOT/speech/build/classes" $(find "$ROOT/speech/src" -name '*.java')
+      - name: D8
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=toolpkg/voice-session-v0.2.12
+          mkdir -p "$ROOT/voice/resources" "$ROOT/speech/resources" /tmp/d8v /tmp/d8s
+          jar cf /tmp/voice.jar -C "$ROOT/voice/build/classes" .
+          jar cf /tmp/speech.jar -C "$ROOT/speech/build/classes" .
+          "${{ steps.bt.outputs.dir }}/d8" --lib "${{ steps.bt.outputs.android }}" --min-api 26 --output /tmp/d8v /tmp/voice.jar
+          "${{ steps.bt.outputs.dir }}/d8" --lib "${{ steps.bt.outputs.android }}" --min-api 26 --output /tmp/d8s /tmp/speech.jar
+          cp /tmp/d8v/classes.dex "$ROOT/voice/resources/voice-adapter.dex"
+          cp /tmp/d8s/classes.dex "$ROOT/speech/resources/speech-adapter.dex"
+      - name: Package ToolPkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/toolpkg/voice-session-v0.2.12"
+          OUT="$GITHUB_WORKSPACE/out"; mkdir -p "$OUT"
+          (cd "$ROOT/voice" && zip -qr "$OUT/Android-VoiceService-Adapter-v0.2.12.toolpkg" manifest.json main.js resources)
+          (cd "$ROOT/speech" && zip -qr "$OUT/Android-SpeechService-Adapter-v0.2.12.toolpkg" manifest.json main.js resources)
+          (cd "$ROOT/coordinator" && zip -qr "$OUT/Voice-Session-Coordinator-v0.2.12.toolpkg" manifest.json main.js)
+          (cd "$GITHUB_WORKSPACE" && zip -qr "$OUT/Voice-Session-Suite-v0.2.12-source.zip" toolpkg/voice-session-v0.2.12 -x '*/build/*' '*/resources/*.dex')
+          cd "$OUT"; sha256sum *.toolpkg Voice-Session-Suite-v0.2.12-source.zip > SHA256SUMS.txt
+          unzip -t Android-VoiceService-Adapter-v0.2.12.toolpkg
+          unzip -t Android-SpeechService-Adapter-v0.2.12.toolpkg
+          unzip -t Voice-Session-Coordinator-v0.2.12.toolpkg
+          cat SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voice-session-toolpkg-v0.2.12
+          path: out/*
+          if-no-files-found: error
