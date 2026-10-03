@@ -42,6 +42,9 @@ jobs:
           assert '"setAutoLanguageMode"' in speech_tools
           assert 'callHelper("setAutoLanguageMode")' not in speech_tools
           assert '"name": "android_personal_wake_status"' in speech_tools
+          assert '"name": "android_personal_wake_log"' in speech_tools
+          assert "exports.android_personal_wake_log" in speech_tools
+          assert '"getPersonalWakeLogJson"' in speech_tools
           assert "exports.android_personal_wake_status" in speech_tools
           assert '"getPersonalWakeDiagnosticsJson"' in speech_tools
           print("thin architecture + AUTO wiring preflight PASS")
