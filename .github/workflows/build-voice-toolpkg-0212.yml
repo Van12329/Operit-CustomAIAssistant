@@ -8,6 +8,9 @@ on:
     paths:
       - 'toolpkg/voice-session-v0.2.12/**'
       - '.github/workflows/build-voice-toolpkg-0212.yml'
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -56,6 +59,19 @@ jobs:
           unzip -t Android-SpeechService-Adapter-v0.2.12.toolpkg
           unzip -t Voice-Session-Coordinator-v0.2.12.toolpkg
           cat SHA256SUMS.txt
+      - name: Publish binaries to build branch
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIST=toolpkg/voice-session-v0.2.12/dist
+          mkdir -p "$DIST"
+          cp out/*.toolpkg out/SHA256SUMS.txt "$DIST/"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$DIST"
+          git commit -m "build(toolpkg): publish v0.2.12 binaries [skip ci]" || exit 0
+          git push origin HEAD:toolpkg/voice-session-0.2.12
       - uses: actions/upload-artifact@v4
         with:
           name: Android-VoiceService-Adapter-v0.2.12
