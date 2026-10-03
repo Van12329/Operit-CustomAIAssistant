@@ -13,8 +13,9 @@
   "enabled_by_default": true,
   "resources": [
     {
-      "id": "voice_adapter_dex",
-      "path": "resources/voice-adapter.dex"
+      "key": "voice_adapter_dex",
+      "path": "resources/voice-adapter.dex",
+      "mime": "application/octet-stream"
     }
   ]
 }
