@@ -1169,6 +1169,7 @@ public final class AndroidSpeechServiceInjector {
         private int lastErrorCode = 0;
         private String lastErrorMessage = "";
         private long recognitionStarts = 0L;
+        private long duplicateStartNoOps = 0L;
         private long finalResults = 0L;
 
         AndroidSpeechHandler(Context app, ClassLoader cl) throws Exception {
