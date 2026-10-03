@@ -1298,9 +1298,16 @@ public final class AndroidSpeechServiceInjector {
                 Boolean ok = runOnMainSync(() -> {
                     ensureRecognizerOnMain();
 
-                    if (recognizing) {
-                        try { recognizer.cancel(); } catch (Throwable ignored) {}
-                        recognizing = false;
+                    // Operit's wake-to-conversation handoff may retry startRecognition()
+                    // while the same recognition request is already active. Treat duplicate
+                    // starts as idempotent: cancelling an active Android SpeechRecognizer
+                    // here creates callback races and unnecessary microphone churn.
+                    if (recognizing
+                        || "PREPARING".equals(currentStateName)
+                        || "RECOGNIZING".equals(currentStateName)
+                        || "PROCESSING".equals(currentStateName)) {
+                        duplicateStartNoOps++;
+                        return Boolean.TRUE;
                     }
 
                     Intent intent =
@@ -1395,6 +1402,7 @@ public final class AndroidSpeechServiceInjector {
             o.put("lastErrorCode", lastErrorCode);
             o.put("lastErrorMessage", lastErrorMessage);
             o.put("recognitionStarts", recognitionStarts);
+            o.put("duplicateStartNoOps", duplicateStartNoOps);
             o.put("finalResults", finalResults);
             o.put("suppressedExpectedClientErrors", suppressedExpectedClientErrors);
         }
