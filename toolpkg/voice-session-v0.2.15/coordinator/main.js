@@ -1,0 +1,3 @@
+async function install(){const p=await ToolPkg.readResource("coordinator_dex","coordinator.dex");Java.loadDex(String(p));return Java.use("com.customai.coordinator.VoiceSessionCoordinator").start(Java.getApplicationContext());}
+async function onCreate(){try{await install();}catch(e){console.error("[Coordinator] "+e);}}
+function registerToolPkg(){ToolPkg.registerAppLifecycleHook({id:"customai_coord_create_0215",event:"application_on_create",function:onCreate});ToolPkg.registerAppLifecycleHook({id:"customai_coord_foreground_0215",event:"application_on_foreground",function:onCreate});return true;} exports.registerToolPkg=registerToolPkg;exports.onCreate=onCreate;
