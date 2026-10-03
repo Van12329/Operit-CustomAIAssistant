@@ -13,8 +13,9 @@
   "enabled_by_default": true,
   "resources": [
     {
-      "id": "coordinator_dex",
-      "path": "resources/coordinator.dex"
+      "key": "coordinator_dex",
+      "path": "resources/coordinator.dex",
+      "mime": "application/octet-stream"
     }
   ]
 }
