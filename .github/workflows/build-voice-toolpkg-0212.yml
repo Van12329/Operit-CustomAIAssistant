@@ -58,6 +58,21 @@ jobs:
           cat SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: voice-session-toolpkg-v0.2.12
+          name: Android-VoiceService-Adapter-v0.2.12
+          path: out/Android-VoiceService-Adapter-v0.2.12.toolpkg
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Android-SpeechService-Adapter-v0.2.12
+          path: out/Android-SpeechService-Adapter-v0.2.12.toolpkg
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Voice-Session-Coordinator-v0.2.12
+          path: out/Voice-Session-Coordinator-v0.2.12.toolpkg
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voice-session-toolpkg-v0.2.12-bundle
           path: out/*
           if-no-files-found: error
