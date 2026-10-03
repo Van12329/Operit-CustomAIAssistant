@@ -1,6 +1,8 @@
 name: Build Voice ToolPkg v0.2.12
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
   push:
     branches: [toolpkg/voice-session-0.2.12]
     paths:
