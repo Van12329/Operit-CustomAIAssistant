@@ -1,0 +1,4 @@
+function resetIfSynthetic(){const c=Java.getApplicationContext();const sp=c.getSharedPreferences("custom_ai_voice_session_v2",0);const s=String(sp.getString("tts_state","NONE"));const owner=String(sp.getString("audio_owner","NONE"));if((s==="REQUESTED"||owner==="TTS")&&sp.getLong("tts_requested_at_ms",0)===0){sp.edit().putString("tts_state","NONE").putString("semantic_state","IDLE").putString("audio_owner","NONE").putString("last_reason","COORDINATOR_CLEARED_SYNTHETIC_STATE").apply();}sp.edit().putBoolean("coordinator_installed",true).putString("coordinator_version","0.2.12").apply();}
+async function onCreate(){resetIfSynthetic();}
+function registerToolPkg(){ToolPkg.registerAppLifecycleHook({id:"customai_coord_create",event:"application_on_create",function:onCreate});ToolPkg.registerAppLifecycleHook({id:"customai_coord_foreground",event:"application_on_foreground",function:onCreate});return true;}
+exports.registerToolPkg=registerToolPkg;
