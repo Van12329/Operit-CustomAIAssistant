@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.customai.voice_session_coordinator",
+  "version": "0.2.12",
+  "api_version": "1.0.0",
+  "main": "main.js",
+  "display_name": {
+    "en": "Voice Session Coordinator"
+  },
+  "description": {
+    "en": "Fail-closed voice ownership protocol; no pre-wake synthetic TTS lease."
+  }
+}
