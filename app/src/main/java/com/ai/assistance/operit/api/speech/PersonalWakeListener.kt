@@ -2,6 +2,7 @@ package com.ai.assistance.operit.api.speech
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.SharedPreferences
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -19,6 +20,7 @@ class PersonalWakeListener(
 ) {
     companion object {
         private const val TAG = "PersonalWakeListener"
+        const val DIAGNOSTICS_PREFS = "operit_personal_wake_diagnostics"
     }
 
     data class Config(
@@ -49,6 +51,27 @@ class PersonalWakeListener(
     private var lastDebugAtMs: Long = 0L
 
     private val debugIntervalMs: Long = 1500L
+    private val diagnostics: SharedPreferences by lazy {
+        context.applicationContext.getSharedPreferences(DIAGNOSTICS_PREFS, Context.MODE_PRIVATE)
+    }
+
+    private fun diag(event: String, values: Map<String, Any?> = emptyMap()) {
+        val e = diagnostics.edit()
+            .putString("lastEvent", event)
+            .putLong("lastEventAtMs", System.currentTimeMillis())
+        for ((key, value) in values) {
+            when (value) {
+                null -> e.remove(key)
+                is String -> e.putString(key, value)
+                is Int -> e.putInt(key, value)
+                is Long -> e.putLong(key, value)
+                is Float -> e.putFloat(key, value)
+                is Boolean -> e.putBoolean(key, value)
+                else -> e.putString(key, value.toString())
+            }
+        }
+        e.apply()
+    }
 
     @SuppressLint("MissingPermission")
     suspend fun runLoop(config: Config = Config()) {
@@ -90,6 +113,15 @@ class PersonalWakeListener(
         try {
             audioRecord.startRecording()
             AppLogger.d(TAG, "Started personal wake loop")
+            diag(
+                "LISTENER_STARTED",
+                mapOf(
+                    "running" to true,
+                    "templateCount" to templatesProvider().size,
+                    "sampleRate" to config.sampleRate,
+                    "frameSize" to config.frameSize,
+                )
+            )
 
             while (running) {
                 if (!currentCoroutineContext().isActive) break
@@ -142,6 +174,7 @@ class PersonalWakeListener(
             }
         } finally {
             AppLogger.d(TAG, "Stopping personal wake loop")
+            diag("LISTENER_STOPPING", mapOf("running" to false))
             try {
                 audioRecord.stop()
             } catch (_: Exception) {
@@ -169,10 +202,14 @@ class PersonalWakeListener(
         noiseRms: Float,
     ) {
         if (segment.isEmpty()) return
-        if (speechMs < config.minSegmentMs) return
+        if (speechMs < config.minSegmentMs) {
+            diag("DROP_TOO_SHORT", mapOf("speechMs" to speechMs, "minSegmentMs" to config.minSegmentMs))
+            return
+        }
 
         val templates = templatesProvider()
         if (templates.isEmpty()) {
+            diag("DROP_NO_TEMPLATES", mapOf("templateCount" to 0))
             maybeDebug("drop: no templates")
             return
         }
@@ -185,6 +222,16 @@ class PersonalWakeListener(
         val rms = computeRms(pcm)
         val rmsGate = max(config.minRms, noiseRms + config.rmsNoiseMargin)
         if (rms < rmsGate) {
+            diag(
+                "DROP_RMS",
+                mapOf(
+                    "rms" to rms,
+                    "rmsGate" to rmsGate,
+                    "noiseRms" to noiseRms,
+                    "speechMs" to speechMs,
+                    "samples" to pcm.size,
+                )
+            )
             maybeDebug(
                 "drop: rms too low (rms=$rms < gate=$rmsGate min=${config.minRms} noise=$noiseRms margin=${config.rmsNoiseMargin}) speechMs=$speechMs samples=${pcm.size}"
             )
@@ -193,6 +240,7 @@ class PersonalWakeListener(
 
         val feat = PersonalWakeFeatureExtractor.extractFeatures(pcm, pcm.size)
         if (feat.isEmpty()) {
+            diag("DROP_EMPTY_FEATURES", mapOf("speechMs" to speechMs, "rms" to rms))
             maybeDebug("drop: empty features")
             return
         }
@@ -214,6 +262,14 @@ class PersonalWakeListener(
             }
         if (validTemplates.isEmpty()) {
             val sizes = templates.map { it.size }.distinct()
+            diag(
+                "DROP_TEMPLATE_MISMATCH",
+                mapOf(
+                    "featureDim" to featureDim,
+                    "templateCount" to templates.size,
+                    "templateSizes" to sizes.joinToString(","),
+                )
+            )
             maybeDebug(
                 "drop: template size mismatch featureDim=$featureDim templateSizes=$sizes (need re-enroll)"
             )
@@ -242,6 +298,15 @@ class PersonalWakeListener(
         val meanLen = tmplSeqs.map { it.size }.average().toFloat().coerceAtLeast(1f)
         val ratio = featSeq.size.toFloat() / meanLen
         if (ratio < config.minDurationRatio || ratio > config.maxDurationRatio) {
+            diag(
+                "DROP_DURATION_RATIO",
+                mapOf(
+                    "durationRatio" to ratio,
+                    "featFrames" to featSeq.size,
+                    "templateMeanFrames" to meanLen,
+                    "speechMs" to speechMs,
+                )
+            )
             maybeDebug(
                 "drop: duration ratio out of range ratio=$ratio featFrames=${featSeq.size} templateMeanFrames=$meanLen"
             )
@@ -277,12 +342,48 @@ class PersonalWakeListener(
         val gapOk = tmplSeqs.size < 2 || hits >= 2 || bestSecondGap <= config.maxBestSecondGap
 
         if (hits >= requiredHits && gapOk) {
+            diag(
+                "TRIGGER",
+                mapOf(
+                    "best" to best,
+                    "secondBest" to secondBest,
+                    "bestSecondGap" to bestSecondGap,
+                    "gapOk" to gapOk,
+                    "hits" to hits,
+                    "requiredHits" to requiredHits,
+                    "rms" to rms,
+                    "speechMs" to speechMs,
+                    "threshold" to dynThreshold,
+                    "intraMin" to intraMin,
+                    "durationRatio" to ratio,
+                    "templateCount" to tmplSeqs.size,
+                    "sims" to sims.joinToString(","),
+                )
+            )
             AppLogger.d(
                 TAG,
                 "Personal wake triggered: best=$best secondBest=$secondBest gap=$bestSecondGap hits=$hits/$requiredHits rms=$rms speechMs=$speechMs threshold=$dynThreshold intraMin=$intraMin intraMean=$intraMean intraStd=$intraStd intra=$intraSims sims=$sims"
             )
             onTriggered(best)
         } else {
+            diag(
+                "DROP_MATCH",
+                mapOf(
+                    "best" to best,
+                    "secondBest" to secondBest,
+                    "bestSecondGap" to bestSecondGap,
+                    "gapOk" to gapOk,
+                    "hits" to hits,
+                    "requiredHits" to requiredHits,
+                    "rms" to rms,
+                    "speechMs" to speechMs,
+                    "threshold" to dynThreshold,
+                    "intraMin" to intraMin,
+                    "durationRatio" to ratio,
+                    "templateCount" to tmplSeqs.size,
+                    "sims" to sims.joinToString(","),
+                )
+            )
             maybeDebug(
                 "drop: not enough matches best=$best secondBest=$secondBest gap=$bestSecondGap gapOk=$gapOk hits=$hits/$requiredHits rms=$rms speechMs=$speechMs threshold=$dynThreshold intraMin=$intraMin intraMean=$intraMean intraStd=$intraStd intra=$intraSims sims=$sims"
             )
