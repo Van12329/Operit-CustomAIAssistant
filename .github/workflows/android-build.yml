@@ -14,7 +14,7 @@ on:
           - ':app:assembleClone'
           - ':app:bundleRelease'
   push:
-    branches: [main, toolpkg/voice-session-0.2.12]
+    branches: [main, toolpkg/voice-session-0.2.12, fix/personal-wake-observability-031]
     paths:
       - .github/workflows/android-build.yml
       - toolpkg/voice-session-v0.2.12/**
