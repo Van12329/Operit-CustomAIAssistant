@@ -41,7 +41,10 @@ jobs:
           assert "exports.android_speech_service_set_auto_language" in speech_tools
           assert '"setAutoLanguageMode"' in speech_tools
           assert 'callHelper("setAutoLanguageMode")' not in speech_tools
-          print("thin architecture + AUTO wiring preflight PASS")
+          speech_injector=(root/"speech/src/com/operit/speech/adapter/AndroidSpeechServiceInjector.java").read_text()
+          assert "duplicateStartNoOps++" in speech_injector
+          assert "recognizer.cancel(); } catch (Throwable ignored) {}\n                        recognizing = false;" not in speech_injector[speech_injector.index("private boolean startRecognition"):speech_injector.index("private boolean stopRecognition")]
+          print("thin architecture + AUTO wiring + idempotent start preflight PASS")
           PY
           A="$ANDROID_HOME/platforms/android-35/android.jar"; D="$ANDROID_HOME/build-tools/35.0.0/d8"
           mkdir -p "$ROOT/speech/build/classes" "$ROOT/speech/resources" "$ROOT/voice/build/classes" "$ROOT/voice/resources" /tmp/d8-speech /tmp/d8-voice
