@@ -28,6 +28,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 private const val TAG = "FloatingFullscreenViewModel"
 private const val FULLSCREEN_TTS_CAPTURE_SUPPRESS_MS = 1200L
+private const val WAKE_GREETING_COMPLETION_TIMEOUT_MS = 20_000L
+private const val WAKE_GREETING_POST_TTS_GUARD_MS = 120L
 
 data class VoiceAvatarMotionRequest(
     val emotion: AvatarEmotion = AvatarEmotion.IDLE,
@@ -339,7 +341,12 @@ class FloatingFullscreenModeViewModel(
             inactivityJob?.cancel()
             inactivityJob = null
 
-            playWakeGreetingIfNeeded(wakeLaunched)
+            val greetingPlayed = playWakeGreetingIfNeeded(wakeLaunched)
+            if (greetingPlayed) {
+                // Keep the microphone physically closed until the wake greeting has
+                // completed, then leave a short acoustic tail before starting STT.
+                delay(WAKE_GREETING_POST_TTS_GUARD_MS)
+            }
 
             startVoiceCapture()
             if (speechManager.isRecording && waveModeAutoTimeoutEnabled) {
@@ -369,23 +376,51 @@ class FloatingFullscreenModeViewModel(
         resetVoiceAvatarToIdle()
     }
 
-    private suspend fun playWakeGreetingIfNeeded(wakeLaunched: Boolean) {
-        if (!wakeLaunched) return
+    private suspend fun playWakeGreetingIfNeeded(wakeLaunched: Boolean): Boolean {
+        if (!wakeLaunched) return false
 
         val enabled = wakePrefs.wakeGreetingEnabledFlow.first()
-        if (!enabled) return
+        if (!enabled) return false
 
         val text =
             wakePrefs.wakeGreetingTextFlow.first().trim().ifBlank {
                 WakeWordPreferences.DEFAULT_WAKE_GREETING_TEXT
             }
-        if (text.isBlank()) return
+        if (text.isBlank()) return false
 
-        // 唤醒问候语与录音并行执行（全双工）
-        if (isWaveActive) {
-            suppressRecognitionUntilMs = System.currentTimeMillis() + FULLSCREEN_TTS_CAPTURE_SUPPRESS_MS
+        val voiceService = speechManager.voiceService
+        val submitted =
+            try {
+                voiceService.speak(text, interrupt = true)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Wake greeting TTS submission failed", e)
+                false
+            }
+
+        if (!submitted) {
+            AppLogger.w(TAG, "Wake greeting TTS was not submitted; continuing without greeting")
+            return false
         }
-        speechManager.speak(text, interrupt = true)
+
+        // VoiceService.speak() returns after the utterance is submitted, not after
+        // playback completes. SimpleVoiceProvider marks isSpeaking before returning,
+        // so wait for the terminal idle edge before granting the microphone to STT.
+        if (voiceService.isSpeaking) {
+            val completed =
+                withTimeoutOrNull(WAKE_GREETING_COMPLETION_TIMEOUT_MS) {
+                    voiceService.speakingStateFlow
+                        .filter { speaking -> !speaking }
+                        .first()
+                    true
+                } ?: false
+
+            if (!completed) {
+                AppLogger.w(TAG, "Wake greeting TTS completion timed out")
+                return false
+            }
+        }
+
+        return true
     }
 
     fun onCenterAvatarClick() {
