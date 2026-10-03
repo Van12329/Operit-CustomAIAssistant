@@ -1,0 +1,63 @@
+name: Build Voice ToolPkg v0.2.13
+on:
+  workflow_dispatch:
+  push:
+    branches: [toolpkg/voice-session-0.2.13]
+    paths:
+      - 'toolpkg/voice-session-v0.2.13/**'
+      - '.github/workflows/build-voice-toolpkg-0213.yml'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Validate canonical ToolPkg registration
+        run: |
+          set -euo pipefail
+          ! grep -R "function:exports\." toolpkg/voice-session-v0.2.13
+          ! grep -R "function: exports\." toolpkg/voice-session-v0.2.13
+          grep -R "function:onCreate" toolpkg/voice-session-v0.2.13/{coordinator,voice,speech}/main.js
+          python3 - <<'PY'
+          import json, pathlib
+          root=pathlib.Path("toolpkg/voice-session-v0.2.13")
+          for k in ("coordinator","voice","speech"):
+              m=json.loads((root/k/"manifest.json").read_text())
+              assert m["schema_version"]==1
+              assert m["api_version"]=="1.0.0"
+              assert m["version"]=="0.2.13"
+              assert (root/k/m["main"]).is_file()
+          print("manifest/container preflight PASS")
+          PY
+      - name: Compile source-first adapter classes
+        run: |
+          set -euo pipefail
+          mkdir -p build/classes
+          # Adapter sources depend on Operit/Android classes; the established 0.2.12 workflow supplies classpaths.
+          echo "Source tree preserved; DEX build is delegated to the existing adapter build stage."
+      - name: Build Coordinator canary with upstream-equivalent zip layout
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd toolpkg/voice-session-v0.2.13/coordinator
+          zip -q -r ../../../dist/Voice-Session-Coordinator-v0.2.13.toolpkg manifest.json main.js
+          cd ../../..
+          python3 - <<'PY'
+          import json,zipfile
+          p="dist/Voice-Session-Coordinator-v0.2.13.toolpkg"
+          with zipfile.ZipFile(p) as z:
+              names=z.namelist()
+              assert "manifest.json" in names and "main.js" in names
+              m=json.loads(z.read("manifest.json"))
+              assert m["main"] in names
+              assert m["toolpkg_id"]=="com.customai.voice_session_coordinator"
+          print("Coordinator archive preflight PASS")
+          PY
+          sha256sum dist/Voice-Session-Coordinator-v0.2.13.toolpkg > dist/SHA256SUMS-v0.2.13.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voice-session-canary-v0.2.13
+          path: dist/*
