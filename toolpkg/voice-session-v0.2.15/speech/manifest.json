@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.customai.android_speech_adapter",
+  "version": "0.2.15",
+  "api_version": "1.0.0",
+  "main": "main.js",
+  "display_name": {
+    "en": "Android SpeechService Adapter"
+  },
+  "description": {
+    "en": "Session-scoped RU/ES SpeechService adapter"
+  },
+  "enabled_by_default": true,
+  "resources": [
+    {
+      "key": "speech_adapter_dex",
+      "path": "resources/speech-adapter.dex",
+      "mime": "application/octet-stream"
+    }
+  ]
+}
