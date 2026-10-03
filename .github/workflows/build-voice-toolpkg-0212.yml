@@ -69,7 +69,8 @@ jobs:
           cp out/*.toolpkg out/SHA256SUMS.txt "$DIST/"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$DIST"
+          git add "$DIST/SHA256SUMS.txt"
+          git add -f "$DIST"/*.toolpkg
           git commit -m "build(toolpkg): publish v0.2.12 binaries [skip ci]" || exit 0
           git push origin HEAD:toolpkg/voice-session-0.2.12
       - uses: actions/upload-artifact@v4
