@@ -2,7 +2,7 @@ name: Build Thin Voice ToolPkg v0.3.0
 on:
   workflow_dispatch:
   push:
-    branches: [refactor/voice-session-0.3.0]
+    branches: [refactor/voice-session-0.3.0, fix/personal-wake-observability-031]
     paths:
       - 'toolpkg/voice-session-v0.3.0/**'
       - '.github/workflows/build-voice-toolpkg-0300.yml'
@@ -29,7 +29,7 @@ jobs:
               m=json.loads((root/k/"manifest.json").read_text())
               assert m["schema_version"]==1
               assert m["api_version"]=="1.0.0"
-              assert m["version"]=="0.3.0"
+              assert m["version"]==("0.3.1" if k=="speech" else "0.3.0")
               assert m["enabled_by_default"] is True
               assert (root/k/m["main"]).is_file(), (k, m["main"])
               for r in m["resources"]:
@@ -41,6 +41,9 @@ jobs:
           assert "exports.android_speech_service_set_auto_language" in speech_tools
           assert '"setAutoLanguageMode"' in speech_tools
           assert 'callHelper("setAutoLanguageMode")' not in speech_tools
+          assert '"name": "android_personal_wake_status"' in speech_tools
+          assert "exports.android_personal_wake_status" in speech_tools
+          assert '"getPersonalWakeDiagnosticsJson"' in speech_tools
           print("thin architecture + AUTO wiring preflight PASS")
           PY
           A="$ANDROID_HOME/platforms/android-35/android.jar"; D="$ANDROID_HOME/build-tools/35.0.0/d8"
@@ -57,23 +60,23 @@ jobs:
         run: |
           set -euo pipefail
           ROOT=toolpkg/voice-session-v0.3.0; mkdir -p dist
-          (cd "$ROOT/speech" && zip -q -r ../../../dist/Android-SpeechService-Adapter-v0.3.0.toolpkg manifest.json main.js dist resources)
+          (cd "$ROOT/speech" && zip -q -r ../../../dist/Android-SpeechService-Adapter-v0.3.1.toolpkg manifest.json main.js dist resources)
           (cd "$ROOT/voice" && zip -q -r ../../../dist/Android-VoiceService-Adapter-v0.3.0.toolpkg manifest.json main.js dist resources)
           python3 - <<'PY'
           import json,zipfile,pathlib
           expected={"Android-SpeechService-Adapter-v0.3.0.toolpkg":"com.operit.android_speech_service_adapter","Android-VoiceService-Adapter-v0.3.0.toolpkg":"com.operit.android_voice_service_adapter"}
-          for name,tid in expected.items():
+          for name,(tid,ver) in expected.items():
               p=pathlib.Path("dist")/name
               with zipfile.ZipFile(p) as z:
                   names=set(z.namelist()); m=json.loads(z.read("manifest.json"))
-                  assert m["toolpkg_id"]==tid and m["version"]=="0.3.0"
+                  assert m["toolpkg_id"]==tid and m["version"]==ver
                   assert m["main"] in names
                   for r in m["resources"]: assert r["path"] in names
                   for s in m["subpackages"]: assert s["entry"] in names
               print(name,"archive preflight PASS")
           PY
-          sha256sum dist/*.toolpkg > dist/SHA256SUMS-v0.3.0.txt
+          sha256sum dist/*.toolpkg > dist/SHA256SUMS-wake-diagnostics.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: voice-session-thin-v0.3.0
+          name: voice-session-wake-diagnostics
           path: dist/*
