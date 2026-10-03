@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.customai.voice_session_coordinator",
+  "version": "0.2.15",
+  "api_version": "1.0.0",
+  "main": "main.js",
+  "display_name": {
+    "en": "Voice Session Coordinator"
+  },
+  "description": {
+    "en": "Session authority for CustomAIAssistant voice sessions"
+  },
+  "enabled_by_default": true,
+  "resources": [
+    {
+      "key": "coordinator_dex",
+      "path": "resources/coordinator.dex",
+      "mime": "application/octet-stream"
+    }
+  ]
+}
