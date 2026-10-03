@@ -58,6 +58,10 @@ jobs:
           unzip -t Android-VoiceService-Adapter-v0.2.12.toolpkg
           unzip -t Android-SpeechService-Adapter-v0.2.12.toolpkg
           unzip -t Voice-Session-Coordinator-v0.2.12.toolpkg
+          # Validate main.js registration shape against upstream ToolPkg runner.
+          node "$GITHUB_WORKSPACE/tools/toolpkg/toolpkg_hook_runner.js" --source "$ROOT/voice" --kind message_processing --event validate
+          node "$GITHUB_WORKSPACE/tools/toolpkg/toolpkg_hook_runner.js" --source "$ROOT/speech" --kind message_processing --event validate
+          node "$GITHUB_WORKSPACE/tools/toolpkg/toolpkg_hook_runner.js" --source "$ROOT/coordinator" --kind message_processing --event validate
           cat SHA256SUMS.txt
       - name: Publish binaries to build branch
         if: github.event_name == 'push'
