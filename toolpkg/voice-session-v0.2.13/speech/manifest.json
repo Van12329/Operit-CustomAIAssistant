@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.customai.android_speech_adapter",
+  "version": "0.2.13",
+  "api_version": "1.0.0",
+  "main": "main.js",
+  "display_name": {
+    "en": "Android SpeechService Adapter"
+  },
+  "description": {
+    "en": "Android SpeechRecognizer RU/ES adapter gated by real TTS lifecycle."
+  },
+  "resources": [
+    {
+      "key": "speech_adapter_dex",
+      "path": "resources/speech-adapter.dex",
+      "mime": "application/octet-stream"
+    }
+  ]
+}
