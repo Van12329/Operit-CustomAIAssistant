@@ -176,8 +176,18 @@ async function android_speech_service_status() {
 }
 
 async function android_speech_service_set_auto_language() {
-  const ok = await callHelper("setAutoLanguageMode");
-  return {ok: !!ok, mode: "AUTO", allowedLanguages: ["ru-RU", "es-US"]};
+  try {
+    await ensureLoaded();
+    const context = Java.getApplicationContext();
+    const ok = Java.callStatic(
+      "com.operit.speech.adapter.AndroidSpeechServiceInjector",
+      "setAutoLanguageMode",
+      context
+    );
+    return {ok: !!ok, mode: "AUTO", allowedLanguages: ["ru-RU", "es-US"]};
+  } catch (error) {
+    return {ok: false, error: String(error && error.message ? error.message : error)};
+  }
 }
 
 async function android_speech_service_set_language(params) {
