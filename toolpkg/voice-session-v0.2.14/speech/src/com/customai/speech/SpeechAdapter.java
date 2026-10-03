@@ -117,7 +117,7 @@ public final class SpeechAdapter {
         public void onRmsChanged(float r){set(volumeFlow,Math.max(0f,Math.min(1f,(r+2f)/12f)));}
         public void onBufferReceived(byte[] b){}
         public void onEndOfSpeech(){set(stateFlow,enumVal("PROCESSING"));}
-        public void onError(int e){recognizing=false;error(e,"SpeechRecognizer error "+e); if(e==SpeechRecognizer.ERROR_NO_MATCH||e==SpeechRecognizer.ERROR_SPEECH_TIMEOUT){long g=generation,e=activeSessionEpoch;main.postDelayed(()->beginRecognizer(g,e),180);}}
+        public void onError(int e){recognizing=false;error(e,"SpeechRecognizer error "+e); if(e==SpeechRecognizer.ERROR_NO_MATCH||e==SpeechRecognizer.ERROR_SPEECH_TIMEOUT){long g=generation,epoch=activeSessionEpoch;main.postDelayed(()->beginRecognizer(g,epoch),180);}}
         public void onResults(Bundle b){String t=best(b);if(t!=null&&!t.trim().isEmpty()){if(cumulative.length()>0)cumulative.append(" ");cumulative.append(t.trim());lastLexicalAt=now();turnToken++;try{set(resultFlow,newResult(cumulative.toString(),false,confidence(b)));}catch(Throwable ignored){}}recognizing=false;long token=turnToken,g=generation,e=activeSessionEpoch;main.postDelayed(()->beginRecognizer(g,e),120);main.postDelayed(()->finalizeIfQuiet(token,g,e),1100);}
         public void onPartialResults(Bundle b){String t=best(b);if(t!=null&&!t.trim().isEmpty()){lastLexicalAt=now();String joined=cumulative.length()==0?t.trim():cumulative.toString()+" "+t.trim();try{set(resultFlow,newResult(joined,false,confidence(b)));}catch(Throwable ignored){}}}
         public void onEvent(int e,Bundle b){}
