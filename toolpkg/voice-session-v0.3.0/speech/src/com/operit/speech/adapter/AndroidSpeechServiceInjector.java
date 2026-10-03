@@ -279,6 +279,107 @@ public final class AndroidSpeechServiceInjector {
         return o.toString();
     }
 
+    public static String probePcmFrontEndJson(Context context) {
+        JSONObject out = new JSONObject();
+        android.media.AudioRecord record = null;
+        android.media.audiofx.AcousticEchoCanceler aec = null;
+        android.media.audiofx.NoiseSuppressor ns = null;
+        android.media.audiofx.AutomaticGainControl agc = null;
+        try {
+            final int sampleRate = 16000;
+            final int channel = android.media.AudioFormat.CHANNEL_IN_MONO;
+            final int encoding = android.media.AudioFormat.ENCODING_PCM_16BIT;
+            final int minBuffer = android.media.AudioRecord.getMinBufferSize(sampleRate, channel, encoding);
+            out.put("probe", "PCM_FRONT_END");
+            out.put("apiLevel", Build.VERSION.SDK_INT);
+            out.put("extraAudioSourceApiAvailable", Build.VERSION.SDK_INT >= 33);
+            out.put("sampleRate", sampleRate);
+            out.put("channelCount", 1);
+            out.put("encoding", "PCM_16BIT");
+            out.put("minBufferBytes", minBuffer);
+            out.put("aecAvailable", android.media.audiofx.AcousticEchoCanceler.isAvailable());
+            out.put("noiseSuppressorAvailable", android.media.audiofx.NoiseSuppressor.isAvailable());
+            out.put("agcAvailable", android.media.audiofx.AutomaticGainControl.isAvailable());
+
+            if (minBuffer <= 0) {
+                out.put("ok", false);
+                out.put("error", "AudioRecord.getMinBufferSize failed: " + minBuffer);
+                return out.toString();
+            }
+
+            record = new android.media.AudioRecord.Builder()
+                .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+                .setAudioFormat(
+                    new android.media.AudioFormat.Builder()
+                        .setEncoding(encoding)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(channel)
+                        .build()
+                )
+                .setBufferSizeInBytes(Math.max(minBuffer * 2, 4096))
+                .build();
+
+            out.put("audioRecordState", record.getState());
+            out.put("audioRecordInitialized",
+                record.getState() == android.media.AudioRecord.STATE_INITIALIZED);
+            out.put("audioSessionId", record.getAudioSessionId());
+            out.put("audioSource", record.getAudioSource());
+            out.put("recordingStarted", false);
+
+            int session = record.getAudioSessionId();
+            if (android.media.audiofx.AcousticEchoCanceler.isAvailable()) {
+                aec = android.media.audiofx.AcousticEchoCanceler.create(session);
+                out.put("aecCreated", aec != null);
+                if (aec != null) {
+                    int result = aec.setEnabled(true);
+                    out.put("aecEnableResult", result);
+                    out.put("aecEnabled", aec.getEnabled());
+                    out.put("aecHasControl", aec.hasControl());
+                    out.put("aecDescriptor", String.valueOf(aec.getDescriptor()));
+                }
+            } else {
+                out.put("aecCreated", false);
+            }
+
+            if (android.media.audiofx.NoiseSuppressor.isAvailable()) {
+                ns = android.media.audiofx.NoiseSuppressor.create(session);
+                out.put("noiseSuppressorCreated", ns != null);
+                if (ns != null) {
+                    out.put("noiseSuppressorEnableResult", ns.setEnabled(true));
+                    out.put("noiseSuppressorEnabled", ns.getEnabled());
+                }
+            } else {
+                out.put("noiseSuppressorCreated", false);
+            }
+
+            if (android.media.audiofx.AutomaticGainControl.isAvailable()) {
+                agc = android.media.audiofx.AutomaticGainControl.create(session);
+                out.put("agcCreated", agc != null);
+                if (agc != null) {
+                    out.put("agcEnableResult", agc.setEnabled(true));
+                    out.put("agcEnabled", agc.getEnabled());
+                }
+            } else {
+                out.put("agcCreated", false);
+            }
+
+            out.put("ok",
+                record.getState() == android.media.AudioRecord.STATE_INITIALIZED
+                    && Build.VERSION.SDK_INT >= 33);
+        } catch (Throwable t) {
+            try {
+                out.put("ok", false);
+                out.put("error", describe(t));
+            } catch (Throwable ignored) {}
+        } finally {
+            try { if (agc != null) agc.release(); } catch (Throwable ignored) {}
+            try { if (ns != null) ns.release(); } catch (Throwable ignored) {}
+            try { if (aec != null) aec.release(); } catch (Throwable ignored) {}
+            try { if (record != null) record.release(); } catch (Throwable ignored) {}
+        }
+        return out.toString();
+    }
+
     public static String getVoiceLanguageDetailsJson(Context context) {
         JSONObject out = new JSONObject();
         HandlerThread thread = null;
