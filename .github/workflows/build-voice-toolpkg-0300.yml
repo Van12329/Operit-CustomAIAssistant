@@ -31,7 +31,7 @@ jobs:
               assert m["api_version"]=="1.0.0"
               assert m["version"]=="0.3.0"
               assert m["enabled_by_default"] is True
-              assert (root/k/m["main"]).is_file()
+              assert (root/k/m["main"]).is_file(), (k, m["main"])
               for r in m["resources"]:
                   assert set(("key","path","mime")) <= set(r)
           assert json.loads((root/"speech/manifest.json").read_text())["toolpkg_id"]=="com.operit.android_speech_service_adapter"
