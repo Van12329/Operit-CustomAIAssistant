@@ -1,4 +1,4 @@
-2c18e1b9c1a2e1eec51cf098104796014f60247e4aace2096a778598d39488c2  Android-SpeechService-Adapter-v0.2.12.toolpkg
-8f3b99bb6e97ba81feba6f1dbd400f90c6bd52d9938758e83c564d7d80631fd0  Android-VoiceService-Adapter-v0.2.12.toolpkg
-ff13070ce31dc83067d9fd2c8cc0274ec6db49d76d3b8690975e1a6312d4f96b  Voice-Session-Coordinator-v0.2.12.toolpkg
-659c012331600d242b0f056ee3308beecc6dc5335c377ec9a938bec67e1e7588  Voice-Session-Suite-v0.2.12-source.zip
+37fd241c3fca5eeff13038a797f643e4850eead04925e65fd3014184bf01d188  Android-SpeechService-Adapter-v0.2.12.toolpkg
+7be75e55cb97db39f60754b1b41c61ff7e57ead3d0578c6977e6e734da6676f3  Android-VoiceService-Adapter-v0.2.12.toolpkg
+90095d7f3e220be7c17e7046b224a8592f222dee50f6706ab9e4020da3a01c11  Voice-Session-Coordinator-v0.2.12.toolpkg
+c1d9372d3eb40ec6a74fd05fbd978dc6c6a1cb46b55405c3019b9cdf076c07b1  Voice-Session-Suite-v0.2.12-source.zip
