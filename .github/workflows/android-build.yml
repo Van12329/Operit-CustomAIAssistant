@@ -3,6 +3,11 @@ name: Android Build
 on:
   workflow_dispatch:
     inputs:
+      source_ref:
+        description: Git ref (branch, tag, or commit SHA) to build
+        required: true
+        default: customai/dev
+        type: string
       gradle_task:
         description: Gradle task to run
         required: true
@@ -71,7 +76,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.sha }}
           fetch-depth: 1
           persist-credentials: false
           submodules: false
