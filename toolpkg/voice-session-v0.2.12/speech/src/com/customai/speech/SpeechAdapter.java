@@ -31,6 +31,7 @@ public final class SpeechAdapter {
     final Context c; final Handler main=new Handler(Looper.getMainLooper());
     final Object initFlow,stateFlow,resultFlow,errorFlow,volumeFlow;
     volatile SpeechRecognizer sr; volatile boolean recognizing=false; volatile String active="es-US";
+    final StringBuilder cumulative=new StringBuilder(); volatile long lastLexicalAt=0L; volatile long turnToken=0L;
     final Class<?> stateClass,resultClass,errorClass;
     Engine(Context c,ClassLoader cl)throws Exception{
       this.c=c;
@@ -118,17 +119,18 @@ public final class SpeechAdapter {
         public void onBufferReceived(byte[] b){}
         public void onEndOfSpeech(){set(stateFlow,enumVal("PROCESSING"));}
         public void onError(int e){recognizing=false;error(e,"SpeechRecognizer error "+e); if(e==SpeechRecognizer.ERROR_NO_MATCH||e==SpeechRecognizer.ERROR_SPEECH_TIMEOUT)main.postDelayed(()->beginRecognizer(),180);}
-        public void onResults(Bundle b){emit(b,true);recognizing=false;prefs(c).edit().putString("semantic_state","PROCESSING").putString("audio_owner","NONE").apply();}
-        public void onPartialResults(Bundle b){emit(b,false);}
+        public void onResults(Bundle b){String t=best(b);if(t!=null&&!t.trim().isEmpty()){if(cumulative.length()>0)cumulative.append(" ");cumulative.append(t.trim());lastLexicalAt=now();turnToken++;try{set(resultFlow,newResult(cumulative.toString(),false,confidence(b)));}catch(Throwable ignored){}}recognizing=false;long token=turnToken;main.postDelayed(()->beginRecognizer(),120);main.postDelayed(()->finalizeIfQuiet(token),1100);}
+        public void onPartialResults(Bundle b){String t=best(b);if(t!=null&&!t.trim().isEmpty()){lastLexicalAt=now();String joined=cumulative.length()==0?t.trim():cumulative.toString()+" "+t.trim();try{set(resultFlow,newResult(joined,false,confidence(b)));}catch(Throwable ignored){}}}
         public void onEvent(int e,Bundle b){}
         public void onLanguageDetection(Bundle b){
           if(Build.VERSION.SDK_INT>=34&&b!=null){String l=b.getString("android.speech.extra.DETECTED_LANGUAGE");if(l!=null){if(l.toLowerCase(Locale.ROOT).startsWith("ru"))active="ru-RU";else if(l.toLowerCase(Locale.ROOT).startsWith("es"))active="es-US";prefs(c).edit().putString("active_language",active).apply();}}
         }
       };
     }
-    void emit(Bundle b,boolean fin){
-      try{ArrayList<String> xs=b==null?null:b.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);if(xs==null||xs.isEmpty())return;float conf=0f;float[] cs=b.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES);if(cs!=null&&cs.length>0)conf=cs[0];set(resultFlow,newResult(xs.get(0),fin,conf));}catch(Throwable t){error(9002,String.valueOf(t));}
-    }
+    String best(Bundle b){ArrayList<String> xs=b==null?null:b.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);return xs==null||xs.isEmpty()?null:xs.get(0);}
+    float confidence(Bundle b){float[] cs=b==null?null:b.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES);return cs!=null&&cs.length>0?cs[0]:0f;}
+    void finalizeIfQuiet(long token){if(token!=turnToken)return;long quiet=now()-lastLexicalAt;if(quiet<1100){main.postDelayed(()->finalizeIfQuiet(token),1100-quiet);return;}if(cumulative.length()==0)return;try{set(resultFlow,newResult(cumulative.toString(),true,1f));}catch(Throwable ignored){}cumulative.setLength(0);recognizing=false;set(stateFlow,enumVal("PROCESSING"));prefs(c).edit().putString("semantic_state","PROCESSING").putString("audio_owner","NONE").putString("last_reason","LEXICAL_CONTINUATION_FINAL").apply();}
+    void emit(Bundle b,boolean fin){try{String t=best(b);if(t!=null)set(resultFlow,newResult(t,fin,confidence(b)));}catch(Throwable t){error(9002,String.valueOf(t));}}
     void error(int code,String msg){try{set(errorFlow,newError(code,msg));set(stateFlow,enumVal("ERROR"));prefs(c).edit().putString("last_speech_error",code+":"+msg).apply();}catch(Throwable ignored){}}
     void stop(boolean cancel){try{if(sr!=null){if(cancel)sr.cancel();else sr.stopListening();}}catch(Throwable ignored){}recognizing=false;set(stateFlow,enumVal("IDLE"));prefs(c).edit().putString("audio_owner","NONE").apply();}
   }
