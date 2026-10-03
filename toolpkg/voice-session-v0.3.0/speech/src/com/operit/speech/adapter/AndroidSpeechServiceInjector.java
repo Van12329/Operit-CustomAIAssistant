@@ -59,6 +59,8 @@ public final class AndroidSpeechServiceInjector {
     private static final String PREFS = "operit_android_speech_service_adapter";
     private static final String KEY_LANGUAGE = "language";
     private static final String KEY_LANGUAGE_MODE = "language_mode";
+    private static final String KEY_LAST_FINAL_LANGUAGE = "last_final_language";
+    private static final String KEY_LAST_FINAL_LANGUAGE_SOURCE = "last_final_language_source";
     private static final String DEFAULT_LANGUAGE = "ru-RU";
     private static final String MODE_AUTO = "AUTO";
     private static final String MODE_MANUAL = "MANUAL";
@@ -1155,6 +1157,11 @@ public final class AndroidSpeechServiceInjector {
         private String lastRequestedLanguage = "";
         private String lastActualLanguage = "";
         private String lastDetectedLanguage = "";
+        private String utteranceDetectedLanguage = "";
+        private int utteranceDetectedConfidence = SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_UNKNOWN;
+        private int utteranceSwitchResult = SpeechRecognizer.LANGUAGE_SWITCH_RESULT_NOT_ATTEMPTED;
+        private String lastFinalLanguage = "";
+        private String lastFinalLanguageSource = "";
         private int languageDetectionCallbacks = 0;
         private int acceptedLanguageUpdates = 0;
         private String lastFinalText = "";
@@ -1281,6 +1288,9 @@ public final class AndroidSpeechServiceInjector {
         private boolean startRecognition(String requestedLanguage, boolean partialResults) {
             lastRequestedLanguage = requestedLanguage == null ? "" : requestedLanguage;
             lastPartialText = "";
+            utteranceDetectedLanguage = "";
+            utteranceDetectedConfidence = SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_UNKNOWN;
+            utteranceSwitchResult = SpeechRecognizer.LANGUAGE_SWITCH_RESULT_NOT_ATTEMPTED;
             String actual = getConfiguredLanguage(app);
             lastActualLanguage = actual;
 
@@ -1373,6 +1383,11 @@ public final class AndroidSpeechServiceInjector {
             o.put("lastRequestedLanguageFromOperit", lastRequestedLanguage);
             o.put("lastActualLanguage", lastActualLanguage);
             o.put("lastDetectedLanguage", lastDetectedLanguage);
+            o.put("utteranceDetectedLanguage", utteranceDetectedLanguage);
+            o.put("utteranceDetectedConfidence", utteranceDetectedConfidence);
+            o.put("utteranceSwitchResult", utteranceSwitchResult);
+            o.put("lastFinalLanguage", lastFinalLanguage);
+            o.put("lastFinalLanguageSource", lastFinalLanguageSource);
             o.put("languageDetectionCallbacks", languageDetectionCallbacks);
             o.put("acceptedLanguageUpdates", acceptedLanguageUpdates);
             o.put("lastPartialText", lastPartialText);
@@ -1451,13 +1466,10 @@ public final class AndroidSpeechServiceInjector {
                         lastDetectedLanguage = normalized == null ? "" : normalized;
                         if (MODE_AUTO.equals(getLanguageMode(app))
                             && normalized != null
-                            && confidence >= SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_CONFIDENT
-                            && (switchResult == SpeechRecognizer.LANGUAGE_SWITCH_RESULT_SUCCEEDED
-                                || (switchResult == SpeechRecognizer.LANGUAGE_SWITCH_RESULT_NOT_ATTEMPTED
-                                    && normalized.equalsIgnoreCase(lastActualLanguage)))) {
-                            if (!normalized.equalsIgnoreCase(lastActualLanguage)) acceptedLanguageUpdates++;
-                            lastActualLanguage = normalized;
-                            setActiveLanguage(app, normalized);
+                            && confidence >= SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_CONFIDENT) {
+                            utteranceDetectedLanguage = normalized;
+                            utteranceDetectedConfidence = confidence;
+                            utteranceSwitchResult = switchResult;
                         }
                     }
 
@@ -1469,6 +1481,7 @@ public final class AndroidSpeechServiceInjector {
                         if (!text.isEmpty()) {
                             lastFinalText = text;
                             finalResults++;
+                            commitFinalLanguageForUtterance();
                             setFlowQuiet(
                                 resultFlow,
                                 newRecognitionResultQuiet(text, true, 1f)
@@ -1494,6 +1507,28 @@ public final class AndroidSpeechServiceInjector {
                     public void onEvent(int eventType, Bundle params) {}
                 }
             );
+        }
+
+        private void commitFinalLanguageForUtterance() {
+            String mode = getLanguageMode(app);
+            String committed;
+            String source;
+            if (MODE_AUTO.equals(mode) && !utteranceDetectedLanguage.isEmpty()) {
+                committed = utteranceDetectedLanguage;
+                source = "ANDROID_LANGUAGE_DETECTION";
+            } else {
+                committed = getConfiguredLanguage(app);
+                source = MODE_AUTO.equals(mode) ? "START_HINT_FALLBACK" : "MANUAL_CONFIG";
+            }
+            if (!committed.equalsIgnoreCase(lastFinalLanguage)) acceptedLanguageUpdates++;
+            lastFinalLanguage = committed;
+            lastFinalLanguageSource = source;
+            lastActualLanguage = committed;
+            app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putString(KEY_LAST_FINAL_LANGUAGE, committed)
+                .putString(KEY_LAST_FINAL_LANGUAGE_SOURCE, source)
+                .putString(KEY_LANGUAGE, committed)
+                .apply();
         }
 
         private String firstResult(Bundle bundle) {
