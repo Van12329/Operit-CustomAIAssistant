@@ -1,0 +1,74 @@
+name: Build Thin Voice ToolPkg v0.3.0
+on:
+  workflow_dispatch:
+  push:
+    branches: [refactor/voice-session-0.3.0]
+    paths:
+      - 'toolpkg/voice-session-v0.3.0/**'
+      - '.github/workflows/build-voice-toolpkg-0300.yml'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v4
+      - name: Install Android SDK
+        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+      - name: Validate architecture and compile helpers
+        run: |
+          set -euo pipefail
+          ROOT=toolpkg/voice-session-v0.3.0
+          test ! -d "$ROOT/coordinator"
+          ! grep -R -E "session_epoch|session_active|session_state|audio_owner|semantic_state|POST_TTS_GUARD|VoiceSessionCoordinator" "$ROOT"
+          python3 - <<'PY'
+          import json,pathlib
+          root=pathlib.Path("toolpkg/voice-session-v0.3.0")
+          for k in ("voice","speech"):
+              m=json.loads((root/k/"manifest.json").read_text())
+              assert m["schema_version"]==1
+              assert m["api_version"]=="1.0.0"
+              assert m["version"]=="0.3.0"
+              assert m["enabled_by_default"] is True
+              assert (root/k/m["main"]).is_file()
+              for r in m["resources"]:
+                  assert set(("key","path","mime")) <= set(r)
+          assert json.loads((root/"speech/manifest.json").read_text())["toolpkg_id"]=="com.operit.android_speech_service_adapter"
+          assert json.loads((root/"voice/manifest.json").read_text())["toolpkg_id"]=="com.operit.android_voice_service_adapter"
+          print("thin architecture preflight PASS")
+          PY
+          A="$ANDROID_HOME/platforms/android-35/android.jar"; D="$ANDROID_HOME/build-tools/35.0.0/d8"
+          mkdir -p "$ROOT/speech/build/classes" "$ROOT/speech/resources" "$ROOT/voice/build/classes" "$ROOT/voice/resources" /tmp/d8-speech /tmp/d8-voice
+          javac -source 8 -target 8 -cp "$A" -d "$ROOT/speech/build/classes" $(find "$ROOT/speech/src" -name '*.java')
+          javac -source 8 -target 8 -cp "$A" -d "$ROOT/voice/build/classes" $(find "$ROOT/voice/src" -name '*.java')
+          jar cf /tmp/speech.jar -C "$ROOT/speech/build/classes" .
+          jar cf /tmp/voice.jar -C "$ROOT/voice/build/classes" .
+          "$D" --lib "$A" --min-api 26 --output /tmp/d8-speech /tmp/speech.jar
+          "$D" --lib "$A" --min-api 26 --output /tmp/d8-voice /tmp/voice.jar
+          cp /tmp/d8-speech/classes.dex "$ROOT/speech/resources/android-speech-service-adapter-helper.dex"
+          cp /tmp/d8-voice/classes.dex "$ROOT/voice/resources/android-voice-service-adapter-helper.dex"
+      - name: Package and inspect ToolPkgs
+        run: |
+          set -euo pipefail
+          ROOT=toolpkg/voice-session-v0.3.0; mkdir -p dist
+          (cd "$ROOT/speech" && zip -q -r ../../../dist/Android-SpeechService-Adapter-v0.3.0.toolpkg manifest.json main.js dist resources)
+          (cd "$ROOT/voice" && zip -q -r ../../../dist/Android-VoiceService-Adapter-v0.3.0.toolpkg manifest.json main.js dist resources)
+          python3 - <<'PY'
+          import json,zipfile,pathlib
+          expected={"Android-SpeechService-Adapter-v0.3.0.toolpkg":"com.operit.android_speech_service_adapter","Android-VoiceService-Adapter-v0.3.0.toolpkg":"com.operit.android_voice_service_adapter"}
+          for name,tid in expected.items():
+              p=pathlib.Path("dist")/name
+              with zipfile.ZipFile(p) as z:
+                  names=set(z.namelist()); m=json.loads(z.read("manifest.json"))
+                  assert m["toolpkg_id"]==tid and m["version"]=="0.3.0"
+                  assert m["main"] in names
+                  for r in m["resources"]: assert r["path"] in names
+                  for s in m["subpackages"]: assert s["entry"] in names
+              print(name,"archive preflight PASS")
+          PY
+          sha256sum dist/*.toolpkg > dist/SHA256SUMS-v0.3.0.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voice-session-thin-v0.3.0
+          path: dist/*
