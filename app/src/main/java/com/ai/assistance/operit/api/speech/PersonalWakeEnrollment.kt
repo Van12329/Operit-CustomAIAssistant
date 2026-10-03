@@ -2,6 +2,10 @@ package com.ai.assistance.operit.api.speech
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
+import android.media.AudioManager
+import android.os.Process
+import android.util.Log
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -26,13 +30,46 @@ object PersonalWakeEnrollment {
             AudioFormat.ENCODING_PCM_16BIT
         )
 
+        val bufferSize = minBufferSize.coerceAtLeast(frameSize) * 2
+        val hasRecordPermission =
+            context.checkPermission(
+                android.Manifest.permission.RECORD_AUDIO,
+                Process.myPid(),
+                Process.myUid()
+            ) == PackageManager.PERMISSION_GRANTED
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val activeRecordings = audioManager.activeRecordingConfigurations.joinToString(
+            prefix = "[",
+            postfix = "]"
+        ) { config ->
+            "{session=${config.clientAudioSessionId},source=${config.clientAudioSource},silenced=${config.isClientSilenced}}"
+        }
+
         val audioRecord = AudioRecord(
             MediaRecorder.AudioSource.MIC,
             sampleRate,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
-            (minBufferSize.coerceAtLeast(frameSize) * 2)
+            bufferSize
         )
+
+        if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
+            val diagnostic =
+                "Personal wake microphone unavailable: " +
+                    "permission=$hasRecordPermission, " +
+                    "minBufferSize=$minBufferSize, bufferSize=$bufferSize, " +
+                    "audioRecordState=${audioRecord.state}, " +
+                    "recordingState=${audioRecord.recordingState}, " +
+                    "audioSessionId=${audioRecord.audioSessionId}, " +
+                    "audioSource=${audioRecord.audioSource}, " +
+                    "activeRecordings=$activeRecordings"
+            Log.e(TAG, diagnostic)
+            try {
+                audioRecord.release()
+            } catch (_: Exception) {
+            }
+            throw PersonalWakeEnrollmentException(diagnostic)
+        }
 
         val vad = OnnxSileroVad(
             context = context.applicationContext,
@@ -52,7 +89,22 @@ object PersonalWakeEnrollment {
             var speechMs = 0L
 
             val startedAt = System.currentTimeMillis()
-            audioRecord.startRecording()
+            try {
+                audioRecord.startRecording()
+            } catch (error: Exception) {
+                val diagnostic =
+                    "Personal wake microphone failed to start: " +
+                        "permission=$hasRecordPermission, " +
+                        "minBufferSize=$minBufferSize, bufferSize=$bufferSize, " +
+                        "audioRecordState=${audioRecord.state}, " +
+                        "recordingState=${audioRecord.recordingState}, " +
+                        "audioSessionId=${audioRecord.audioSessionId}, " +
+                        "audioSource=${audioRecord.audioSource}, " +
+                        "activeRecordings=$activeRecordings, " +
+                        "cause=${error.javaClass.simpleName}: ${error.message}"
+                Log.e(TAG, diagnostic, error)
+                throw PersonalWakeEnrollmentException(diagnostic, error)
+            }
 
             while (true) {
                 val now = System.currentTimeMillis()
@@ -101,4 +153,10 @@ object PersonalWakeEnrollment {
             }
         }
     }
+    private const val TAG = "PersonalWakeEnrollment"
 }
+
+class PersonalWakeEnrollmentException(
+    message: String,
+    cause: Throwable? = null,
+) : IllegalStateException(message, cause)
