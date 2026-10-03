@@ -11,6 +11,8 @@ public final class AndroidVoiceServiceInjector {
 
     private static final String SPEECH_PREFS = "operit_android_speech_service_adapter";
     private static final String SPEECH_LANGUAGE_KEY = "language";
+    private static final String SPEECH_LAST_FINAL_LANGUAGE_KEY = "last_final_language";
+    private static final String SPEECH_LAST_FINAL_LANGUAGE_SOURCE_KEY = "last_final_language_source";
     private static final String DEFAULT_SPEECH_LANGUAGE = "ru-RU";
 
     private static Context appContext;
@@ -34,6 +36,7 @@ public final class AndroidVoiceServiceInjector {
     private static long passthroughSpeakCount;
 
     private static String lastConfiguredSpeechLanguage = "";
+    private static String lastSpeechLanguageSource = "";
     private static String lastRoute = "";
     private static String lastTextPreview = "";
     private static String lastAppliedVoiceId = "";
@@ -139,10 +142,11 @@ public final class AndroidVoiceServiceInjector {
             lastRoutingError = "";
 
             try {
-                String configured = getConfiguredSpeechLanguage();
+                String configured = getCommittedSpeechLanguage();
                 lastConfiguredSpeechLanguage = configured;
+                lastSpeechLanguageSource = getCommittedSpeechLanguageSource();
 
-                String route = chooseRoute(configured, text);
+                String route = chooseRoute(configured);
                 lastRoute = route;
 
                 if ("ru-RU".equals(route)) {
@@ -178,39 +182,30 @@ public final class AndroidVoiceServiceInjector {
         }
     }
 
-    private static String chooseRoute(String configured, String text) {
-        // Protect Russian greetings/quoted Cyrillic even when the active STT session is Spanish.
-        if (containsCyrillic(text)) {
-            return "ru-RU";
-        }
-
+    private static String chooseRoute(String configured) {
         String normalized = configured == null ? "" : configured.trim().replace('_', '-');
         if (normalized.regionMatches(true, 0, "es-", 0, 3)
-            || normalized.equalsIgnoreCase("es")) {
-            return "es-US";
-        }
+            || normalized.equalsIgnoreCase("es")) return "es-US";
         if (normalized.regionMatches(true, 0, "ru-", 0, 3)
-            || normalized.equalsIgnoreCase("ru")) {
-            return "ru-RU";
-        }
-
+            || normalized.equalsIgnoreCase("ru")) return "ru-RU";
         return "passthrough";
     }
 
-    private static boolean containsCyrillic(String text) {
-        if (text == null || text.isEmpty()) return false;
-        for (int i = 0; i < text.length();) {
-            int cp = text.codePointAt(i);
-            Character.UnicodeBlock block = Character.UnicodeBlock.of(cp);
-            if (block == Character.UnicodeBlock.CYRILLIC
-                || block == Character.UnicodeBlock.CYRILLIC_SUPPLEMENTARY
-                || block == Character.UnicodeBlock.CYRILLIC_EXTENDED_A
-                || block == Character.UnicodeBlock.CYRILLIC_EXTENDED_B) {
-                return true;
-            }
-            i += Character.charCount(cp);
-        }
-        return false;
+    private static String getCommittedSpeechLanguage() {
+        Context app = appContext;
+        if (app == null) return DEFAULT_SPEECH_LANGUAGE;
+        SharedPreferences prefs = app.getSharedPreferences(SPEECH_PREFS, Context.MODE_PRIVATE);
+        return prefs.getString(
+            SPEECH_LAST_FINAL_LANGUAGE_KEY,
+            prefs.getString(SPEECH_LANGUAGE_KEY, DEFAULT_SPEECH_LANGUAGE)
+        );
+    }
+
+    private static String getCommittedSpeechLanguageSource() {
+        Context app = appContext;
+        if (app == null) return "DEFAULT";
+        SharedPreferences prefs = app.getSharedPreferences(SPEECH_PREFS, Context.MODE_PRIVATE);
+        return prefs.getString(SPEECH_LAST_FINAL_LANGUAGE_SOURCE_KEY, "LEGACY_OR_CONFIG");
     }
 
     private static String getConfiguredSpeechLanguage() {
@@ -253,6 +248,8 @@ public final class AndroidVoiceServiceInjector {
                 out.put("russianVoiceId", russianVoiceId);
                 out.put("russianLocaleTag", russianLocaleTag);
                 out.put("configuredSpeechLanguage", getConfiguredSpeechLanguage());
+                out.put("committedSpeechLanguage", getCommittedSpeechLanguage());
+                out.put("committedSpeechLanguageSource", getCommittedSpeechLanguageSource());
 
                 out.put("routedSpeakCount", routedSpeakCount);
                 out.put("russianSpeakCount", russianSpeakCount);
@@ -260,6 +257,7 @@ public final class AndroidVoiceServiceInjector {
                 out.put("passthroughSpeakCount", passthroughSpeakCount);
 
                 out.put("lastConfiguredSpeechLanguage", lastConfiguredSpeechLanguage);
+                out.put("lastSpeechLanguageSource", lastSpeechLanguageSource);
                 out.put("lastRoute", lastRoute);
                 out.put("lastTextPreview", lastTextPreview);
                 out.put("lastAppliedVoiceId", lastAppliedVoiceId);
