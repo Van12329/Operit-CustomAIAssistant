@@ -18,6 +18,11 @@
       "parameters": []
     },
     {
+      "name": "android_speech_service_set_auto_language",
+      "description": {"en": "Enable native Android RU/ES language detection and switching for each recognition call. Does not own or restart the Operit voice session.", "zh": "Enable native RU/ES auto language switching."},
+      "parameters": []
+    },
+    {
       "name": "android_speech_service_set_language",
       "description": {
         "en": "Set the Android recognition locale. Configured locales: ru-RU, es-AR, es-ES. Operit's hardcoded zh-CN is ignored.",
@@ -170,6 +175,11 @@ async function android_speech_service_status() {
   }
 }
 
+async function android_speech_service_set_auto_language() {
+  const ok = await callHelper("setAutoLanguageMode");
+  return {ok: !!ok, mode: "AUTO", allowedLanguages: ["ru-RU", "es-US"]};
+}
+
 async function android_speech_service_set_language(params) {
   try {
     await ensureLoaded();
@@ -302,6 +312,7 @@ async function android_speech_service_uninstall_runtime() {
 
 exports.android_speech_service_status = android_speech_service_status;
 exports.android_speech_service_set_language = android_speech_service_set_language;
+exports.android_speech_service_set_auto_language = android_speech_service_set_auto_language;
 exports.android_speech_service_list_system_languages = android_speech_service_list_system_languages;
 exports.android_speech_service_probe_on_device = android_speech_service_probe_on_device;
 exports.android_speech_service_check_support = android_speech_service_check_support;
