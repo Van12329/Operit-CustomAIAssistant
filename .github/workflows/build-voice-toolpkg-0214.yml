@@ -1,0 +1,62 @@
+name: Build Voice ToolPkg v0.2.14
+on:
+  workflow_dispatch:
+  push:
+    branches: [toolpkg/voice-session-0.2.14]
+    paths:
+      - 'toolpkg/voice-session-v0.2.14/**'
+      - '.github/workflows/build-voice-toolpkg-0214.yml'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v4
+      - name: Install Android SDK
+        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+      - name: Validate and compile all three source-first helpers
+        run: |
+          set -euo pipefail
+          ROOT=toolpkg/voice-session-v0.2.14
+          ! grep -R "function:exports\." "$ROOT"
+          grep -R "function:onCreate" "$ROOT"/{coordinator,voice,speech}/main.js
+          python3 - <<'PY'
+          import json,pathlib
+          root=pathlib.Path("toolpkg/voice-session-v0.2.14")
+          for k in ("coordinator","voice","speech"):
+              m=json.loads((root/k/"manifest.json").read_text())
+              assert m["schema_version"]==1 and m["api_version"]=="1.0.0" and m["version"]=="0.2.14"
+              assert (root/k/m["main"]).is_file()
+          PY
+          ANDROID_JAR="$ANDROID_HOME/platforms/android-35/android.jar"; D8="$ANDROID_HOME/build-tools/35.0.0/d8"
+          for K in coordinator voice speech; do
+            mkdir -p "$ROOT/$K/build/classes" "$ROOT/$K/resources" "/tmp/d8-$K"
+            javac -source 8 -target 8 -cp "$ANDROID_JAR" -d "$ROOT/$K/build/classes" $(find "$ROOT/$K/src" -name '*.java')
+            jar cf "/tmp/$K.jar" -C "$ROOT/$K/build/classes" .
+            "$D8" --lib "$ANDROID_JAR" --min-api 26 --output "/tmp/d8-$K" "/tmp/$K.jar"
+          done
+          cp /tmp/d8-coordinator/classes.dex "$ROOT/coordinator/resources/coordinator.dex"
+          cp /tmp/d8-voice/classes.dex "$ROOT/voice/resources/voice-adapter.dex"
+          cp /tmp/d8-speech/classes.dex "$ROOT/speech/resources/speech-adapter.dex"
+      - name: Package with proven v0.2.13 layout and preflight
+        run: |
+          set -euo pipefail
+          ROOT=toolpkg/voice-session-v0.2.14; mkdir -p dist
+          (cd "$ROOT/coordinator" && zip -q -r ../../../dist/Voice-Session-Coordinator-v0.2.14.toolpkg manifest.json main.js resources)
+          (cd "$ROOT/voice" && zip -q -r ../../../dist/Android-VoiceService-Adapter-v0.2.14.toolpkg manifest.json main.js resources)
+          (cd "$ROOT/speech" && zip -q -r ../../../dist/Android-SpeechService-Adapter-v0.2.14.toolpkg manifest.json main.js resources)
+          python3 - <<'PY'
+          import json,zipfile,pathlib
+          for p in pathlib.Path("dist").glob("*.toolpkg"):
+              with zipfile.ZipFile(p) as z:
+                  n=z.namelist(); m=json.loads(z.read("manifest.json")); assert m["main"] in n
+                  for r in m.get("resources",[]): assert r["path"] in n,(p,r["path"])
+              print(p.name,"PASS")
+          PY
+          sha256sum dist/*.toolpkg > dist/SHA256SUMS-v0.2.14.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voice-session-suite-v0.2.14
+          path: dist/*
