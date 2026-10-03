@@ -297,6 +297,44 @@ public final class AndroidSpeechServiceInjector {
         return o.toString();
     }
 
+    public static String getPersonalWakeLogJson(Context context) {
+        JSONObject out = new JSONObject();
+        java.io.BufferedReader reader = null;
+        try {
+            int pid = android.os.Process.myPid();
+            Process process = new ProcessBuilder(
+                "logcat", "-d", "-t", "600", "--pid=" + pid
+            ).redirectErrorStream(true).start();
+            reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(process.getInputStream())
+            );
+            JSONArray lines = new JSONArray();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.contains("PersonalWakeListener")
+                    || (line.contains("AIForegroundService")
+                        && (line.contains("wake") || line.contains("Wake") || line.contains("唤醒")))) {
+                    lines.put(line);
+                }
+            }
+            process.waitFor(2500L, java.util.concurrent.TimeUnit.MILLISECONDS);
+            out.put("ok", true);
+            out.put("pid", pid);
+            out.put("lines", lines);
+            out.put("lineCount", lines.length());
+        } catch (Throwable t) {
+            try {
+                out.put("ok", false);
+                out.put("error", describe(t));
+            } catch (Throwable ignored) {}
+        } finally {
+            if (reader != null) {
+                try { reader.close(); } catch (Throwable ignored) {}
+            }
+        }
+        return out.toString();
+    }
+
     public static String getPersonalWakeDiagnosticsJson(Context context) {
         JSONObject out = new JSONObject();
         try {
