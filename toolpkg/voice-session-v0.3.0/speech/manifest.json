@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.operit.android_speech_service_adapter",
+  "version": "0.3.0",
+  "api_version": "1.0.0",
+  "main": "main.js",
+  "display_name": {"en":"Android SpeechService Adapter","zh":"Android SpeechService Adapter"},
+  "description": {"en":"Thin Android SpeechRecognizer adapter for Operit. Preserves Operit conversation lifecycle and supports explicit Russian/Spanish recognition without a parallel session coordinator.","zh":"Thin Android SpeechRecognizer adapter for Operit."},
+  "enabled_by_default": true,
+  "subpackages": [{"id":"android_speech_service_adapter_tools","entry":"dist/packages/android_speech_service_adapter_tools.js"}],
+  "resources": [{"key":"android_speech_service_adapter_helper","path":"resources/android-speech-service-adapter-helper.dex","mime":"application/vnd.android.dex"}]
+}
