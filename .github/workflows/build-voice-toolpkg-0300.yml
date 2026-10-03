@@ -36,7 +36,12 @@ jobs:
                   assert set(("key","path","mime")) <= set(r)
           assert json.loads((root/"speech/manifest.json").read_text())["toolpkg_id"]=="com.operit.android_speech_service_adapter"
           assert json.loads((root/"voice/manifest.json").read_text())["toolpkg_id"]=="com.operit.android_voice_service_adapter"
-          print("thin architecture preflight PASS")
+          speech_tools=(root/"speech/dist/packages/android_speech_service_adapter_tools.js").read_text()
+          assert '"name": "android_speech_service_set_auto_language"' in speech_tools
+          assert "exports.android_speech_service_set_auto_language" in speech_tools
+          assert '"setAutoLanguageMode"' in speech_tools
+          assert 'callHelper("setAutoLanguageMode")' not in speech_tools
+          print("thin architecture + AUTO wiring preflight PASS")
           PY
           A="$ANDROID_HOME/platforms/android-35/android.jar"; D="$ANDROID_HOME/build-tools/35.0.0/d8"
           mkdir -p "$ROOT/speech/build/classes" "$ROOT/speech/resources" "$ROOT/voice/build/classes" "$ROOT/voice/resources" /tmp/d8-speech /tmp/d8-voice
