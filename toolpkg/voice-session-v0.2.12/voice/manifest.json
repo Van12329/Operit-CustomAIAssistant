@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.customai.android_voice_adapter",
+  "version": "0.2.12",
+  "api_version": "1.0.0",
+  "main": "main.js",
+  "display_name": {
+    "en": "Android VoiceService Adapter",
+    "zh": "Android VoiceService Adapter"
+  },
+  "description": {
+    "en": "Source-first RU/ES TTS adapter with real TTS transaction lifecycle."
+  },
+  "resources": [
+    {
+      "key": "voice_adapter_dex",
+      "path": "resources/voice-adapter.dex",
+      "mime": "application/octet-stream"
+    }
+  ]
+}
