@@ -32,12 +32,24 @@ jobs:
               assert (root/k/m["main"]).is_file()
           print("manifest/container preflight PASS")
           PY
-      - name: Compile source-first adapter classes
+      - uses: android-actions/setup-android@v4
+      - name: Install Android SDK
+        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+      - name: Compile source-first Voice and Speech helpers
         run: |
           set -euo pipefail
-          mkdir -p build/classes
-          # Adapter sources depend on Operit/Android classes; the established 0.2.12 workflow supplies classpaths.
-          echo "Source tree preserved; DEX build is delegated to the existing adapter build stage."
+          ROOT=toolpkg/voice-session-v0.2.13
+          ANDROID_JAR="$ANDROID_HOME/platforms/android-35/android.jar"
+          D8="$ANDROID_HOME/build-tools/35.0.0/d8"
+          mkdir -p "$ROOT/voice/build/classes" "$ROOT/speech/build/classes" "$ROOT/voice/resources" "$ROOT/speech/resources" /tmp/d8v /tmp/d8s
+          javac -source 8 -target 8 -cp "$ANDROID_JAR" -d "$ROOT/voice/build/classes" $(find "$ROOT/voice/src" -name '*.java')
+          javac -source 8 -target 8 -cp "$ANDROID_JAR" -d "$ROOT/speech/build/classes" $(find "$ROOT/speech/src" -name '*.java')
+          jar cf /tmp/voice.jar -C "$ROOT/voice/build/classes" .
+          jar cf /tmp/speech.jar -C "$ROOT/speech/build/classes" .
+          "$D8" --lib "$ANDROID_JAR" --min-api 26 --output /tmp/d8v /tmp/voice.jar
+          "$D8" --lib "$ANDROID_JAR" --min-api 26 --output /tmp/d8s /tmp/speech.jar
+          cp /tmp/d8v/classes.dex "$ROOT/voice/resources/voice-adapter.dex"
+          cp /tmp/d8s/classes.dex "$ROOT/speech/resources/speech-adapter.dex"
       - name: Build Coordinator canary with upstream-equivalent zip layout
         run: |
           set -euo pipefail
@@ -56,8 +68,23 @@ jobs:
               assert m["toolpkg_id"]=="com.customai.voice_session_coordinator"
           print("Coordinator archive preflight PASS")
           PY
-          sha256sum dist/Voice-Session-Coordinator-v0.2.13.toolpkg > dist/SHA256SUMS-v0.2.13.txt
+          (cd toolpkg/voice-session-v0.2.13/voice && zip -q -r ../../../dist/Android-VoiceService-Adapter-v0.2.13.toolpkg manifest.json main.js resources)
+          (cd toolpkg/voice-session-v0.2.13/speech && zip -q -r ../../../dist/Android-SpeechService-Adapter-v0.2.13.toolpkg manifest.json main.js resources)
+          python3 - <<'PY'
+          import json,zipfile,pathlib
+          for name in ("Android-VoiceService-Adapter-v0.2.13.toolpkg","Android-SpeechService-Adapter-v0.2.13.toolpkg"):
+              p=pathlib.Path("dist")/name
+              with zipfile.ZipFile(p) as z:
+                  names=z.namelist()
+                  assert "manifest.json" in names and "main.js" in names
+                  m=json.loads(z.read("manifest.json"))
+                  assert m["main"] in names
+                  for r in m.get("resources",[]):
+                      assert r["path"] in names, (name,r["path"])
+              print(name,"archive preflight PASS")
+          PY
+          sha256sum dist/*.toolpkg > dist/SHA256SUMS-v0.2.13.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: voice-session-canary-v0.2.13
+          name: voice-session-suite-v0.2.13
           path: dist/*
