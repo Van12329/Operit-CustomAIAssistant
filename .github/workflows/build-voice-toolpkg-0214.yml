@@ -2,7 +2,7 @@ name: Build Voice ToolPkg v0.2.14
 on:
   workflow_dispatch:
   push:
-    branches: [toolpkg/voice-session-0.2.14]
+    branches: [toolpkg/voice-session-0.2.14-build3]
     paths:
       - 'toolpkg/voice-session-v0.2.14/**'
       - '.github/workflows/build-voice-toolpkg-0214.yml'
