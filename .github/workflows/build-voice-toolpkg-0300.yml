@@ -64,7 +64,7 @@ jobs:
           (cd "$ROOT/voice" && zip -q -r ../../../dist/Android-VoiceService-Adapter-v0.3.0.toolpkg manifest.json main.js dist resources)
           python3 - <<'PY'
           import json,zipfile,pathlib
-          expected={"Android-SpeechService-Adapter-v0.3.0.toolpkg":"com.operit.android_speech_service_adapter","Android-VoiceService-Adapter-v0.3.0.toolpkg":"com.operit.android_voice_service_adapter"}
+          expected={"Android-SpeechService-Adapter-v0.3.1.toolpkg":("com.operit.android_speech_service_adapter","0.3.1"),"Android-VoiceService-Adapter-v0.3.0.toolpkg":("com.operit.android_voice_service_adapter","0.3.0")}
           for name,(tid,ver) in expected.items():
               p=pathlib.Path("dist")/name
               with zipfile.ZipFile(p) as z:
