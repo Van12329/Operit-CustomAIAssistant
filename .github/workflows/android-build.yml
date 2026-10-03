@@ -14,9 +14,10 @@ on:
           - ':app:assembleClone'
           - ':app:bundleRelease'
   push:
-    branches: [main]
+    branches: [main, toolpkg/voice-session-0.2.12]
     paths:
       - .github/workflows/android-build.yml
+      - toolpkg/voice-session-v0.2.12/**
       - .gitmodules
       - .npmrc
       - app/**
@@ -63,6 +64,7 @@ env:
 
 jobs:
   build:
+    if: github.ref != 'refs/heads/toolpkg/voice-session-0.2.12'
     name: Build Android artifacts
     runs-on: ubuntu-24.04
     timeout-minutes: 240
@@ -236,3 +238,42 @@ jobs:
             app/build/outputs/bundle/**/*.aab
           if-no-files-found: error
           retention-days: 14
+
+  voice-toolpkg:
+    if: github.ref == 'refs/heads/toolpkg/voice-session-0.2.12'
+    name: Build Voice ToolPkg only
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: android-actions/setup-android@v4
+      - name: Install SDK
+        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+      - name: Compile and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=toolpkg/voice-session-v0.2.12
+          ANDROID_JAR="$ANDROID_HOME/platforms/android-35/android.jar"
+          D8="$ANDROID_HOME/build-tools/35.0.0/d8"
+          mkdir -p "$ROOT/voice/build/classes" "$ROOT/speech/build/classes" "$ROOT/voice/resources" "$ROOT/speech/resources" /tmp/d8v /tmp/d8s out
+          javac -source 8 -target 8 -cp "$ANDROID_JAR" -d "$ROOT/voice/build/classes" $(find "$ROOT/voice/src" -name '*.java')
+          javac -source 8 -target 8 -cp "$ANDROID_JAR" -d "$ROOT/speech/build/classes" $(find "$ROOT/speech/src" -name '*.java')
+          jar cf /tmp/voice.jar -C "$ROOT/voice/build/classes" .
+          jar cf /tmp/speech.jar -C "$ROOT/speech/build/classes" .
+          "$D8" --lib "$ANDROID_JAR" --min-api 26 --output /tmp/d8v /tmp/voice.jar
+          "$D8" --lib "$ANDROID_JAR" --min-api 26 --output /tmp/d8s /tmp/speech.jar
+          cp /tmp/d8v/classes.dex "$ROOT/voice/resources/voice-adapter.dex"
+          cp /tmp/d8s/classes.dex "$ROOT/speech/resources/speech-adapter.dex"
+          (cd "$ROOT/voice" && zip -qr "$GITHUB_WORKSPACE/out/Android-VoiceService-Adapter-v0.2.12.toolpkg" manifest.json main.js resources)
+          (cd "$ROOT/speech" && zip -qr "$GITHUB_WORKSPACE/out/Android-SpeechService-Adapter-v0.2.12.toolpkg" manifest.json main.js resources)
+          (cd "$ROOT/coordinator" && zip -qr "$GITHUB_WORKSPACE/out/Voice-Session-Coordinator-v0.2.12.toolpkg" manifest.json main.js)
+          cd "$GITHUB_WORKSPACE/out"
+          unzip -t Android-VoiceService-Adapter-v0.2.12.toolpkg
+          unzip -t Android-SpeechService-Adapter-v0.2.12.toolpkg
+          unzip -t Voice-Session-Coordinator-v0.2.12.toolpkg
+          sha256sum *.toolpkg > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voice-session-toolpkg-v0.2.12
+          path: out/*
+          if-no-files-found: error
