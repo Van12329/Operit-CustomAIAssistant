@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.customai.android_voice_adapter",
+  "version": "0.2.15",
+  "api_version": "1.0.0",
+  "main": "main.js",
+  "display_name": {
+    "en": "Android VoiceService Adapter"
+  },
+  "description": {
+    "en": "Epoch-aware multilingual VoiceService adapter"
+  },
+  "enabled_by_default": true,
+  "resources": [
+    {
+      "key": "voice_adapter_dex",
+      "path": "resources/voice-adapter.dex",
+      "mime": "application/octet-stream"
+    }
+  ]
+}
