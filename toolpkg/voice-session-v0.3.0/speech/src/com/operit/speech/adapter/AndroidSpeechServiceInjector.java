@@ -86,6 +86,7 @@ public final class AndroidSpeechServiceInjector {
     private static Object injectedProxy;
     private static AndroidSpeechHandler handler;
     private static boolean installed;
+    private static boolean stockDelegateReleasedOnInstall;
     private static String installError = "";
 
     // API 34+ observable model-download state.
@@ -165,6 +166,20 @@ public final class AndroidSpeechServiceInjector {
                     );
                 }
 
+                // Ownership has moved to the proxy. Do not keep the stock factory lease
+                // alive in parallel: for local STT that lease retains SpeechServiceFactory.localEntry
+                // and can survive wake handoff even though the adapter never delegates to it.
+                stockDelegateReleasedOnInstall = false;
+                if (originalInstance != null) {
+                    try {
+                        Method shutdown = speechServiceClass.getMethod("shutdown");
+                        shutdown.invoke(originalInstance);
+                        stockDelegateReleasedOnInstall = true;
+                    } catch (Throwable ignored) {
+                    }
+                    originalInstance = null;
+                }
+
                 installed = true;
                 installError = "";
                 return true;
@@ -189,8 +204,10 @@ public final class AndroidSpeechServiceInjector {
 
             try {
                 if (instanceField != null && profileField != null) {
-                    instanceField.set(null, originalInstance);
-                    profileField.set(null, originalProfileId);
+                    // Re-enter the stock factory through its normal lazy creation path.
+                    // Restoring a previously shut-down lease would reintroduce stale ownership.
+                    instanceField.set(null, null);
+                    profileField.set(null, null);
                 }
             } catch (Throwable ignored) {
                 ok = false;
@@ -255,6 +272,7 @@ public final class AndroidSpeechServiceInjector {
                 o.put("configuredLocales", "ru-RU,es-US,es-419,es-AR,es-ES");
                 o.put("partialPolicy", "FINAL_ONLY_TO_OPERIT");
                 o.put("installError", installError);
+                o.put("stockDelegateReleasedOnInstall", stockDelegateReleasedOnInstall);
                 o.put(
                     "proxyClass",
                     injectedProxy == null ? JSONObject.NULL : injectedProxy.getClass().getName()
