@@ -14,7 +14,7 @@ on:
           - ':app:assembleClone'
           - ':app:bundleRelease'
   push:
-    branches: [main, customai/dev, feature/full-duplex-barge-in]
+    branches: [main, customai/dev, feature/full-duplex-barge-in, fix/wake-enrollment-audiorecord]
     paths:
       - .github/workflows/android-build.yml
       - .gitmodules
