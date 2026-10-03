@@ -22,6 +22,7 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
@@ -57,7 +58,10 @@ public final class AndroidSpeechServiceInjector {
 
     private static final String PREFS = "operit_android_speech_service_adapter";
     private static final String KEY_LANGUAGE = "language";
+    private static final String KEY_LANGUAGE_MODE = "language_mode";
     private static final String DEFAULT_LANGUAGE = "ru-RU";
+    private static final String MODE_AUTO = "AUTO";
+    private static final String MODE_MANUAL = "MANUAL";
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final Object LOCK = new Object();
@@ -211,7 +215,16 @@ public final class AndroidSpeechServiceInjector {
             .edit()
             .putString(KEY_LANGUAGE, normalized)
             .apply();
+        a.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putString(KEY_LANGUAGE_MODE, MODE_MANUAL).apply();
         if (handler != null) handler.noteConfiguredLanguage(normalized);
+        return true;
+    }
+
+    public static boolean setAutoLanguageMode(Context context) {
+        Context a = context.getApplicationContext();
+        a.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putString(KEY_LANGUAGE_MODE, MODE_AUTO).apply();
         return true;
     }
 
@@ -234,6 +247,9 @@ public final class AndroidSpeechServiceInjector {
                 o.put("installed", installed);
                 o.put("factoryPointsToProxy", factoryPointsToProxy);
                 o.put("configuredLanguage", configured);
+                o.put("languageMode", getLanguageMode(a));
+                o.put("autoAllowedLanguages", "ru-RU,es-US");
+                o.put("autoSwitchApiAvailable", Build.VERSION.SDK_INT >= 34);
                 o.put("configuredLocales", "ru-RU,es-US,es-419,es-AR,es-ES");
                 o.put("partialPolicy", "FINAL_ONLY_TO_OPERIT");
                 o.put("installError", installError);
@@ -1026,6 +1042,23 @@ public final class AndroidSpeechServiceInjector {
         return intent;
     }
 
+    private static Intent buildActiveRecognitionIntent(
+        String language, boolean preferOffline, boolean partialResults
+    ) {
+        Intent intent = buildRecognitionIntent(language, preferOffline, partialResults);
+        if (MODE_AUTO.equals(getLanguageMode(app)) && Build.VERSION.SDK_INT >= 34) {
+            ArrayList<String> allowed = new ArrayList<>(Arrays.asList("ru-RU", "es-US"));
+            intent.putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH,
+                RecognizerIntent.LANGUAGE_SWITCH_BALANCED);
+            intent.putStringArrayListExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES, allowed);
+            intent.putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_DETECTION, true);
+            intent.putStringArrayListExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_DETECTION_ALLOWED_LANGUAGES, allowed);
+        }
+        return intent;
+    }
+
     private static boolean containsLanguage(List<String> values, String language) {
         if (values == null || language == null) return false;
         for (String value : values) {
@@ -1063,6 +1096,24 @@ public final class AndroidSpeechServiceInjector {
     private static String getConfiguredLanguage(Context context) {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(KEY_LANGUAGE, DEFAULT_LANGUAGE);
+    }
+
+    private static String getLanguageMode(Context context) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_LANGUAGE_MODE, MODE_MANUAL);
+    }
+
+    private static void setActiveLanguage(Context context, String language) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putString(KEY_LANGUAGE, language).apply();
+    }
+
+    private static String normalizeDetectedLanguage(String raw) {
+        if (raw == null) return null;
+        String s = raw.trim().toLowerCase(Locale.ROOT);
+        if (s.startsWith("ru")) return "ru-RU";
+        if (s.startsWith("es")) return "es-US";
+        return null;
     }
 
     private static String normalizeLanguage(String raw) {
@@ -1103,6 +1154,9 @@ public final class AndroidSpeechServiceInjector {
         private String currentStateName = "UNINITIALIZED";
         private String lastRequestedLanguage = "";
         private String lastActualLanguage = "";
+        private String lastDetectedLanguage = "";
+        private int languageDetectionCallbacks = 0;
+        private int acceptedLanguageUpdates = 0;
         private String lastFinalText = "";
         private String lastPartialText = "";
         private int lastErrorCode = 0;
@@ -1240,7 +1294,7 @@ public final class AndroidSpeechServiceInjector {
                     }
 
                     Intent intent =
-                        buildRecognitionIntent(actual, true, partialResults);
+                        buildActiveRecognitionIntent(actual, true, partialResults);
 
                     setState("PREPARING");
                     recognizing = true;
@@ -1318,6 +1372,9 @@ public final class AndroidSpeechServiceInjector {
             o.put("recognizing", recognizing);
             o.put("lastRequestedLanguageFromOperit", lastRequestedLanguage);
             o.put("lastActualLanguage", lastActualLanguage);
+            o.put("lastDetectedLanguage", lastDetectedLanguage);
+            o.put("languageDetectionCallbacks", languageDetectionCallbacks);
+            o.put("acceptedLanguageUpdates", acceptedLanguageUpdates);
             o.put("lastPartialText", lastPartialText);
             o.put("lastFinalText", lastFinalText);
             o.put("lastErrorCode", lastErrorCode);
@@ -1377,6 +1434,31 @@ public final class AndroidSpeechServiceInjector {
                         recognizing = false;
                         setFlowQuiet(volumeFlow, Float.valueOf(0f));
                         publishError(error, recognitionErrorMessage(error));
+                    }
+
+                    @Override
+                    public void onLanguageDetection(Bundle results) {
+                        if (Build.VERSION.SDK_INT < 34 || results == null) return;
+                        languageDetectionCallbacks++;
+                        String normalized = normalizeDetectedLanguage(
+                            results.getString(SpeechRecognizer.DETECTED_LANGUAGE, ""));
+                        int confidence = results.getInt(
+                            SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL,
+                            SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_UNKNOWN);
+                        int switchResult = results.getInt(
+                            SpeechRecognizer.LANGUAGE_SWITCH_RESULT,
+                            SpeechRecognizer.LANGUAGE_SWITCH_RESULT_NOT_ATTEMPTED);
+                        lastDetectedLanguage = normalized == null ? "" : normalized;
+                        if (MODE_AUTO.equals(getLanguageMode(app))
+                            && normalized != null
+                            && confidence >= SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_CONFIDENT
+                            && (switchResult == SpeechRecognizer.LANGUAGE_SWITCH_RESULT_SUCCEEDED
+                                || (switchResult == SpeechRecognizer.LANGUAGE_SWITCH_RESULT_NOT_ATTEMPTED
+                                    && normalized.equalsIgnoreCase(lastActualLanguage)))) {
+                            if (!normalized.equalsIgnoreCase(lastActualLanguage)) acceptedLanguageUpdates++;
+                            lastActualLanguage = normalized;
+                            setActiveLanguage(app, normalized);
+                        }
                     }
 
                     @Override
