@@ -1,0 +1,3 @@
+async function install(){const p=await ToolPkg.readResource("speech_adapter_dex","speech-adapter.dex");Java.loadDex(String(p));return Java.use("com.customai.speech.SpeechAdapter").install(Java.getApplicationContext());}
+async function onCreate(){try{await install();}catch(e){console.error("[SpeechAdapter] "+e);}}
+function registerToolPkg(){ToolPkg.registerAppLifecycleHook({id:"customai_speech_create_0214",event:"application_on_create",function:onCreate});ToolPkg.registerAppLifecycleHook({id:"customai_speech_foreground_0214",event:"application_on_foreground",function:onCreate});return true;} exports.registerToolPkg=registerToolPkg;exports.onCreate=onCreate;
