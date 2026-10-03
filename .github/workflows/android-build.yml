@@ -14,7 +14,7 @@ on:
           - ':app:assembleClone'
           - ':app:bundleRelease'
   push:
-    branches: [main]
+    branches: [main, fix/wake-greeting-before-stt]
     paths:
       - .github/workflows/android-build.yml
       - .gitmodules
