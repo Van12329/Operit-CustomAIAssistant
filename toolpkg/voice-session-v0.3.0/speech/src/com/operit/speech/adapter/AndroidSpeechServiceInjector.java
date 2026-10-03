@@ -279,6 +279,27 @@ public final class AndroidSpeechServiceInjector {
         return o.toString();
     }
 
+    public static String getPersonalWakeDiagnosticsJson(Context context) {
+        JSONObject out = new JSONObject();
+        try {
+            Context a = context.getApplicationContext();
+            android.content.SharedPreferences prefs =
+                a.getSharedPreferences("operit_personal_wake_diagnostics", Context.MODE_PRIVATE);
+            java.util.Map<String, ?> all = prefs.getAll();
+            for (java.util.Map.Entry<String, ?> entry : all.entrySet()) {
+                Object value = entry.getValue();
+                out.put(entry.getKey(), value == null ? JSONObject.NULL : value);
+            }
+            out.put("ok", true);
+        } catch (Throwable t) {
+            try {
+                out.put("ok", false);
+                out.put("error", describe(t));
+            } catch (Throwable ignored) {}
+        }
+        return out.toString();
+    }
+
     public static String getVoiceLanguageDetailsJson(Context context) {
         JSONObject out = new JSONObject();
         HandlerThread thread = null;
