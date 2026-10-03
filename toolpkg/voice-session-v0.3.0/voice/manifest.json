@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.operit.android_voice_service_adapter",
+  "version": "0.3.0",
+  "api_version": "1.0.0",
+  "main": "main.js",
+  "display_name": {"en":"Android VoiceService Adapter","zh":"Android VoiceService Adapter"},
+  "description": {"en":"Thin multilingual TTS routing adapter for Operit. Preserves the stock VoiceService and conversation lifecycle; no parallel session coordinator.","zh":"Thin multilingual Android TTS routing adapter."},
+  "enabled_by_default": true,
+  "subpackages": [{"id":"android_voice_service_adapter_tools","entry":"dist/packages/android_voice_service_adapter_tools.js"}],
+  "resources": [{"key":"android_voice_service_adapter_helper","path":"resources/android-voice-service-adapter-helper.dex","mime":"application/vnd.android.dex"}]
+}
