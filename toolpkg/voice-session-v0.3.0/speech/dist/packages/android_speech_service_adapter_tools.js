@@ -10,6 +10,14 @@
   "category": "System",
   "tools": [
     {
+      "name": "android_personal_wake_log",
+      "description": {
+        "en": "Read recent PersonalWakeListener and wake lifecycle log lines from the Operit process without ADB or microphone use.",
+        "zh": "Read recent personal wake logs without ADB."
+      },
+      "parameters": []
+    },
+    {
       "name": "android_personal_wake_status",
       "description": {
         "en": "Read the latest persisted PersonalWakeListener gate decision without using the microphone.",
@@ -161,6 +169,21 @@ async function ensureLoaded() {
   Java.loadDex(path, {childFirstPrefixes: ["com.operit.speech.adapter."]});
   helperLoaded = true;
   return true;
+}
+
+async function android_personal_wake_log() {
+  try {
+    await ensureLoaded();
+    const context = Java.getApplicationContext();
+    const raw = Java.callStatic(
+      "com.operit.speech.adapter.AndroidSpeechServiceInjector",
+      "getPersonalWakeLogJson",
+      context
+    );
+    return JSON.parse(String(raw));
+  } catch (error) {
+    return {ok: false, error: String(error && error.message ? error.message : error)};
+  }
 }
 
 async function android_personal_wake_status() {
@@ -343,6 +366,7 @@ async function android_speech_service_uninstall_runtime() {
   }
 }
 
+exports.android_personal_wake_log = android_personal_wake_log;
 exports.android_personal_wake_status = android_personal_wake_status;
 exports.android_speech_service_status = android_speech_service_status;
 exports.android_speech_service_set_language = android_speech_service_set_language;
