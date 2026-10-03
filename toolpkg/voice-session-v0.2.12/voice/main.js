@@ -1,4 +1,4 @@
 async function install(){const p=await ToolPkg.readResource("voice_adapter_dex","voice-adapter.dex");Java.loadDex(String(p));const C=Java.use("com.customai.voice.VoiceAdapter");return C.install(Java.getApplicationContext());}
 async function onCreate(){try{await install();}catch(e){console.error("[VoiceAdapter] install failed "+e);}}
-function registerToolPkg(){ToolPkg.registerAppLifecycleHook({id:"customai_voice_create",event:"application_on_create",function:onCreate});ToolPkg.registerAppLifecycleHook({id:"customai_voice_foreground",event:"application_on_foreground",function:onCreate});return true;}
+function registerToolPkg(){ToolPkg.registerAppLifecycleHook({id:"customai_voice_create",event:"application_on_create",function:exports.onCreate});ToolPkg.registerAppLifecycleHook({id:"customai_voice_foreground",event:"application_on_foreground",function:exports.onCreate});return true;}
 exports.registerToolPkg=registerToolPkg; exports.onCreate=onCreate;
