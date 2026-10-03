@@ -10,6 +10,14 @@
   "category": "System",
   "tools": [
     {
+      "name": "android_personal_wake_status",
+      "description": {
+        "en": "Read the latest persisted PersonalWakeListener gate decision without using the microphone.",
+        "zh": "Read latest PersonalWakeListener diagnostics."
+      },
+      "parameters": []
+    },
+    {
       "name": "android_speech_service_status",
       "description": {
         "en": "Read injection, language, recognition and last-result status.",
@@ -153,6 +161,21 @@ async function ensureLoaded() {
   Java.loadDex(path, {childFirstPrefixes: ["com.operit.speech.adapter."]});
   helperLoaded = true;
   return true;
+}
+
+async function android_personal_wake_status() {
+  try {
+    await ensureLoaded();
+    const context = Java.getApplicationContext();
+    const raw = Java.callStatic(
+      "com.operit.speech.adapter.AndroidSpeechServiceInjector",
+      "getPersonalWakeDiagnosticsJson",
+      context
+    );
+    return JSON.parse(String(raw));
+  } catch (error) {
+    return {ok: false, error: String(error && error.message ? error.message : error)};
+  }
 }
 
 async function android_speech_service_status() {
@@ -320,6 +343,7 @@ async function android_speech_service_uninstall_runtime() {
   }
 }
 
+exports.android_personal_wake_status = android_personal_wake_status;
 exports.android_speech_service_status = android_speech_service_status;
 exports.android_speech_service_set_language = android_speech_service_set_language;
 exports.android_speech_service_set_auto_language = android_speech_service_set_auto_language;
