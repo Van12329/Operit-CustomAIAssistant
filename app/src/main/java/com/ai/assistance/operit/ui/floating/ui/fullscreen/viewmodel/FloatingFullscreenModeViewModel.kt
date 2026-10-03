@@ -94,14 +94,25 @@ class FloatingFullscreenModeViewModel(
             if (finalText.isNotEmpty()) {
                 aiMessage = context.getString(R.string.floating_thinking)
                 coroutineScope.launch {
+                    val bargeIn = isWaveActive && isAiBusyOrSpeaking()
+                    if (bargeIn) {
+                        // Voice input is the interruption signal. Keep the existing capture
+                        // alive, stop the current spoken/AI turn, then send the new utterance.
+                        floatContext.onCancelMessage?.invoke()
+                        stopCurrentTtsPlayback()
+                    }
                     startVoiceAvatarThinking()
-                    prepareVoiceCaptureForAiTurn()
+                    if (!isWaveActive) {
+                        prepareVoiceCaptureForAiTurn()
+                    }
                     try {
                         maybeAutoAttachByKeyword(finalText)
                     } catch (_: Exception) {
                     }
                     floatContext.onSendMessage?.invoke(finalText, PromptFunctionType.VOICE)
-                    awaitAiTurnAndResumeVoiceCapture()
+                    if (!isWaveActive) {
+                        awaitAiTurnAndResumeVoiceCapture()
+                    }
                 }
             }
         },
@@ -142,7 +153,9 @@ class FloatingFullscreenModeViewModel(
     }
 
     private fun prepareVoiceCaptureForAiTurn() {
-        if (!isWaveActive) return
+        // Wave mode is a continuous voice call. Its capture remains active across AI/TTS
+        // turns so a finalized user utterance can act as a barge-in signal.
+        if (isWaveActive) return
         shouldResumeVoiceCaptureAfterAiTurn = true
         isVoiceCapturePausedForAi = true
         resumeVoiceCaptureJob?.cancel()
