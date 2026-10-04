@@ -11,10 +11,12 @@ class UnifiedVoiceFrameRouterTest {
         var wakes = 0
         var sessionFrames = 0
         var speakingFrames = 0
+        var preroll = floatArrayOf()
         val router = UnifiedVoiceFrameRouter(
             runtime = runtime,
             wakeDetector = wake,
             onWakeDetected = { wakes++ },
+            onSessionPreroll = { preroll = it },
             onSessionFrame = { sessionFrames++ },
             onSpeakingFrame = { speakingFrames++ },
         )
@@ -23,6 +25,7 @@ class UnifiedVoiceFrameRouterTest {
         runtime.onFrame(floatArrayOf(1f))
         assertEquals(1, wakes)
         assertEquals(1, wake.frames)
+        assertEquals(listOf(1f), preroll.toList())
 
         runtime.stateMachine.onWakeDetected()
         runtime.onFrame(floatArrayOf(2f))
