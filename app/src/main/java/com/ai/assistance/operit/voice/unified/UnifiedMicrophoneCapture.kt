@@ -5,6 +5,8 @@ import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import androidx.annotation.RequiresPermission
 import java.util.concurrent.atomic.AtomicLong
@@ -23,6 +25,8 @@ class UnifiedMicrophoneCapture(
 ) : UnifiedAudioInput {
     private var record: AudioRecord? = null
     private var worker: Thread? = null
+    private var echoCanceler: AcousticEchoCanceler? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
 
     @Volatile
     private var running = false
@@ -72,6 +76,12 @@ class UnifiedMicrophoneCapture(
         )
         identity = captureIdentity
         record = rec
+        echoCanceler = runCatching {
+            if (AcousticEchoCanceler.isAvailable()) AcousticEchoCanceler.create(rec.audioSessionId)?.apply { enabled = true } else null
+        }.getOrNull()
+        noiseSuppressor = runCatching {
+            if (NoiseSuppressor.isAvailable()) NoiseSuppressor.create(rec.audioSessionId)?.apply { enabled = true } else null
+        }.getOrNull()
         running = true
 
         try {
@@ -80,6 +90,7 @@ class UnifiedMicrophoneCapture(
             running = false
             record = null
             identity = null
+            releaseAudioEffects()
             rec.release()
             Log.e(TAG, "startRecording failed", error)
             return false
@@ -131,10 +142,18 @@ class UnifiedMicrophoneCapture(
             Log.e(TAG, "CAPTURE_STOP_TIMEOUT identity=$identity")
         }
         worker = null
+        releaseAudioEffects()
         record?.release()
         Log.i(TAG, "CAPTURE_CLOSE identity=$identity")
         record = null
         identity = null
+    }
+
+    private fun releaseAudioEffects() {
+        runCatching { echoCanceler?.release() }
+        runCatching { noiseSuppressor?.release() }
+        echoCanceler = null
+        noiseSuppressor = null
     }
 
     private companion object {
