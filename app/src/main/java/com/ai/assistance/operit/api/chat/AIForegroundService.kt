@@ -51,6 +51,7 @@ import com.ai.assistance.operit.data.preferences.WakeWordPreferences
 import com.ai.assistance.operit.data.repository.WorkflowRepository
 import com.ai.assistance.operit.ui.main.MainActivity
 import com.ai.assistance.operit.voice.unified.OperitUnifiedVoiceHost
+import com.ai.assistance.operit.voice.unified.UnifiedVoiceUiBridge
 import com.ai.assistance.operit.util.WaifuMessageProcessor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -599,6 +600,7 @@ class AIForegroundService : Service() {
                 triggerWakeLaunch()
             },
             onSpeechResult = { result ->
+                UnifiedVoiceUiBridge.publish(result)
                 AppLogger.d(
                     TAG,
                     "UNIFIED_STT " + (if (result.isFinal) "final" else "partial") +
