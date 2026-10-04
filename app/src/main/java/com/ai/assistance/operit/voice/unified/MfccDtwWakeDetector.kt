@@ -17,7 +17,6 @@ class MfccDtwWakeDetector(
     private val speech = ArrayList<Float>()
     private var seenSpeech = false
     private var silenceSamples = 0
-    private var totalSamples = 0
 
     override fun loadProfile(profile: WakeProfile) {
         require(profile.backendId == BACKEND_ID) { "unsupported backend: ${profile.backendId}" }
@@ -31,8 +30,6 @@ class MfccDtwWakeDetector(
         if (pcm.isEmpty()) return WakeResult(false)
 
         val isSpeech = speechGate.isSpeech(pcm)
-        totalSamples += pcm.size
-
         if (isSpeech) {
             seenSpeech = true
             silenceSamples = 0
@@ -41,7 +38,7 @@ class MfccDtwWakeDetector(
             silenceSamples += pcm.size
         }
 
-        val maxReached = totalSamples >= msToSamples(maxSegmentMs)
+        val maxReached = speech.size >= msToSamples(maxSegmentMs)
         val speechEnded = seenSpeech && silenceSamples >= msToSamples(endSilenceMs)
         if (!maxReached && !speechEnded) return WakeResult(false)
 
@@ -70,7 +67,6 @@ class MfccDtwWakeDetector(
         speech.clear()
         seenSpeech = false
         silenceSamples = 0
-        totalSamples = 0
     }
 
     private fun msToSamples(ms: Int): Int = (sampleRate * ms) / 1000
