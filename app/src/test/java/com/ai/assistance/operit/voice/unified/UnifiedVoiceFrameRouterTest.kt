@@ -49,6 +49,49 @@ class UnifiedVoiceFrameRouterTest {
         runtime.close()
     }
 
+
+    @Test
+    fun streamingSttStartsWithPrerollThenConsumesOnlySessionFrames() {
+        val runtime = UnifiedAudioRuntime(sampleRate = 4, prerollSeconds = 1)
+        val wake = FakeWakeDetector()
+        val stt = FakeStreamingSpeechRecognizer()
+        val router = UnifiedVoiceFrameRouter(
+            runtime = runtime,
+            wakeDetector = wake,
+            onWakeDetected = { runtime.stateMachine.onWakeDetected() },
+            speechRecognizer = stt,
+        )
+
+        runtime.onFrame(floatArrayOf(1f))
+        wake.detectNext = true
+        runtime.onFrame(floatArrayOf(2f))
+        assertEquals(listOf(1f, 2f), stt.preroll.toList())
+        assertEquals(0, stt.frames.size)
+
+        runtime.onFrame(floatArrayOf(3f))
+        runtime.onFrame(floatArrayOf(4f))
+        assertEquals(listOf(listOf(3f), listOf(4f)), stt.frames.map { it.toList() })
+
+        router.close()
+        assertEquals(1, stt.closed)
+        runtime.close()
+    }
+
+    private class FakeStreamingSpeechRecognizer : StreamingSpeechRecognizer {
+        var preroll = floatArrayOf()
+        val frames = mutableListOf<FloatArray>()
+        var closed = 0
+
+        override fun startSession(preroll: FloatArray): Boolean {
+            this.preroll = preroll.copyOf()
+            return true
+        }
+        override fun acceptPcm(pcm: FloatArray) { frames += pcm.copyOf() }
+        override fun finishSession() = Unit
+        override fun cancelSession() = Unit
+        override fun close() { closed++ }
+    }
+
     private class FakeWakeDetector : WakeDetector {
         var frames = 0
         var detectNext = false
