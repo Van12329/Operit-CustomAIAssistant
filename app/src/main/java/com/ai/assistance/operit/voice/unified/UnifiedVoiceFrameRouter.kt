@@ -36,6 +36,14 @@ class UnifiedVoiceFrameRouter(
         }
     }
 
+    fun finishSpeechRecognition() {
+        speechRecognizer?.finishSession()
+    }
+
+    fun cancelSpeechRecognition() {
+        speechRecognizer?.cancelSession()
+    }
+
     override fun close() {
         subscription.close()
         wakeDetector.reset()
