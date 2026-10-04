@@ -220,6 +220,13 @@ jobs:
           chmod +x ./gradlew
           ./gradlew "$gradle_task" --stacktrace --no-daemon
 
+      - name: Run unified voice unit tests
+        if: github.ref == 'refs/heads/feature/s2s-unified-audio-prototype'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest --tests 'com.ai.assistance.operit.voice.unified.*' --stacktrace --no-daemon
+
       - name: Upload Android reports
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
