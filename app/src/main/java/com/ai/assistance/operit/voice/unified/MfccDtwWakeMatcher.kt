@@ -8,10 +8,18 @@ import kotlin.math.sqrt
 /**
  * Backend-A matching core extracted from the historical personal-wake algorithm.
  * Pure math only: no Android, microphone, service, audio focus or lifecycle dependencies.
+ *
+ * It intentionally preserves the historical quality guards that matter to recognition:
+ * duration compatibility, enrollment-consistency-derived threshold, and ambiguous-best protection.
  */
 class MfccDtwWakeMatcher(
     private val featureDim: Int = 39,
     private val dtwBand: Int = 4,
+    private val dynamicThresholdMargin: Float = 0.02f,
+    private val minDynamicThresholdFloor: Float = 0.84f,
+    private val maxBestSecondGap: Float = 0.04f,
+    private val minDurationRatio: Float = 0.75f,
+    private val maxDurationRatio: Float = 1.25f,
 ) {
     data class Match(
         val best: Float,
@@ -29,31 +37,55 @@ class MfccDtwWakeMatcher(
     ): Match {
         require(featureDim > 0)
         val candidate = reshapeAndNormalize(features)
-        val valid = templates.filter { it.isNotEmpty() && it.size % featureDim == 0 }
+        val valid = templates
+            .filter { it.isNotEmpty() && it.size % featureDim == 0 }
+            .map(::reshapeAndNormalize)
+            .filter { it.isNotEmpty() }
         if (candidate.isEmpty() || valid.isEmpty()) {
             return Match(0f, 0f, 0, threshold, false)
         }
+
+        val meanTemplateLength = valid.map { it.size }.average().toFloat().coerceAtLeast(1f)
+        val durationRatio = candidate.size.toFloat() / meanTemplateLength
+        if (durationRatio < minDurationRatio || durationRatio > maxDurationRatio) {
+            return Match(0f, 0f, 0, threshold, false)
+        }
+
+        val intraSimilarities = ArrayList<Float>()
+        for (i in valid.indices) {
+            for (j in i + 1 until valid.size) {
+                intraSimilarities.add(dtwSimilarity(valid[i], valid[j]))
+            }
+        }
+        val intraMin = intraSimilarities.minOrNull() ?: 1f
+        val effectiveThreshold = max(
+            minDynamicThresholdFloor,
+            min(threshold, (intraMin - dynamicThresholdMargin).coerceIn(0f, 1f)),
+        )
 
         var best = -1f
         var second = -1f
         var hits = 0
         for (template in valid) {
-            val sim = dtwSimilarity(candidate, reshapeAndNormalize(template))
+            val sim = dtwSimilarity(candidate, template)
             if (sim > best) {
                 second = best
                 best = sim
             } else if (sim > second) {
                 second = sim
             }
-            if (sim >= threshold) hits++
+            if (sim >= effectiveThreshold) hits++
         }
+
         val required = min(requiredMatches.coerceAtLeast(1), valid.size)
+        val bestSecondGap = if (second >= 0f) best - second else 0f
+        val gapOk = valid.size < 2 || hits >= 2 || bestSecondGap <= maxBestSecondGap
         return Match(
             best = best.coerceAtLeast(0f),
             secondBest = second.coerceAtLeast(0f),
             hits = hits,
-            threshold = threshold,
-            detected = hits >= required,
+            threshold = effectiveThreshold,
+            detected = hits >= required && gapOk,
         )
     }
 
