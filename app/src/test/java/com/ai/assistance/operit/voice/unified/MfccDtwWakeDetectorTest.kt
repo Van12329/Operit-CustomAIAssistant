@@ -32,4 +32,35 @@ class MfccDtwWakeDetectorTest {
         assertFalse(detector.process(floatArrayOf(0f)).detected)
         assertTrue(detector.process(floatArrayOf(0f)).detected)
     }
+
+    @Test
+    fun silenceBeforeSpeechDoesNotConsumeMaximumSpeechDuration() {
+        val feature = FloatArray(39) { i -> if (i == 0) 1f else 0f }
+        val detector = MfccDtwWakeDetector(
+            speechGate = SpeechGate { frame -> frame.firstOrNull() == 1f },
+            featureEncoder = { feature.copyOf() },
+            sampleRate = 1_000,
+            minSegmentMs = 2,
+            maxSegmentMs = 4,
+            endSilenceMs = 2,
+        )
+        detector.loadProfile(
+            WakeProfile(
+                version = 1,
+                backendId = MfccDtwWakeDetector.BACKEND_ID,
+                sampleRate = 1_000,
+                profileData = listOf(feature),
+                threshold = 0.99f,
+                createdAt = 0L,
+            )
+        )
+
+        repeat(10) {
+            assertFalse(detector.process(floatArrayOf(0f)).detected)
+        }
+        assertFalse(detector.process(floatArrayOf(1f)).detected)
+        assertFalse(detector.process(floatArrayOf(1f)).detected)
+        assertFalse(detector.process(floatArrayOf(0f)).detected)
+        assertTrue(detector.process(floatArrayOf(0f)).detected)
+    }
 }
