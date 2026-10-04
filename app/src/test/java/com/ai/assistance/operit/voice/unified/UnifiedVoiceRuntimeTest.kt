@@ -37,6 +37,27 @@ class UnifiedVoiceRuntimeTest {
         assertTrue(guard.check(CaptureIdentity(creationId = 7, audioSessionId = 100)).isContinuous)
     }
 
+    @Test
+    fun twentyLifecycleCyclesPreserveOneCaptureIdentity() {
+        val capture = CaptureIdentity(creationId = 11, audioSessionId = 77)
+        val guard = CaptureContinuityGuard(capture)
+        val runtime = UnifiedAudioRuntime(sampleRate = 16_000)
+
+        repeat(20) {
+            runtime.stateMachine.onWakeDetected()
+            assertTrue(guard.check(capture).isContinuous)
+            runtime.stateMachine.onResponseStarted()
+            assertTrue(guard.check(capture).isContinuous)
+            runtime.stateMachine.onBargeIn()
+            assertTrue(guard.check(capture).isContinuous)
+            runtime.stateMachine.onResponseStarted()
+            runtime.stateMachine.onResponseFinished()
+            runtime.stateMachine.onSessionEnded()
+            assertEquals(UnifiedVoiceState.HOTWORD_ARMED, runtime.stateMachine.state)
+            assertTrue(guard.check(capture).isContinuous)
+        }
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun cannotWakeWhileSessionIsAlreadyActive() {
         val state = UnifiedVoiceStateMachine()
