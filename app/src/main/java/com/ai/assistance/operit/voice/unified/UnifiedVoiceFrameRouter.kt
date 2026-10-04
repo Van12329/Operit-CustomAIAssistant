@@ -9,6 +9,7 @@ class UnifiedVoiceFrameRouter(
     private val runtime: UnifiedAudioRuntime,
     private val wakeDetector: WakeDetector,
     private val onWakeDetected: (WakeResult) -> Unit,
+    private val onSessionPreroll: (FloatArray) -> Unit = {},
     private val onSessionFrame: (FloatArray) -> Unit = {},
     private val onSpeakingFrame: (FloatArray) -> Unit = {},
 ) : AutoCloseable {
@@ -16,7 +17,12 @@ class UnifiedVoiceFrameRouter(
         when (runtime.stateMachine.state) {
             UnifiedVoiceState.HOTWORD_ARMED -> {
                 val result = wakeDetector.process(frame)
-                if (result.detected) onWakeDetected(result)
+                if (result.detected) {
+                    // The preroll subscriber is registered by UnifiedAudioRuntime before this router,
+                    // so the snapshot includes the current wake frame without any recorder handoff.
+                    onSessionPreroll(runtime.preroll.snapshotLast())
+                    onWakeDetected(result)
+                }
             }
             UnifiedVoiceState.SESSION_LISTENING -> onSessionFrame(frame)
             UnifiedVoiceState.SPEAKING -> onSpeakingFrame(frame)
