@@ -119,14 +119,19 @@ class UnifiedMicrophoneCapture(
     override fun stop() {
         if (!running && record == null) return
         running = false
-        worker?.join()
-        worker = null
+        // Stop recording before joining: AudioRecord.read() may be blocking on the worker thread.
+        // Calling stop() unblocks read; joining first can deadlock shutdown.
         record?.let { rec ->
             runCatching {
                 if (rec.recordingState == AudioRecord.RECORDSTATE_RECORDING) rec.stop()
             }
-            rec.release()
         }
+        worker?.join(STOP_JOIN_TIMEOUT_MS)
+        if (worker?.isAlive == true) {
+            Log.e(TAG, "CAPTURE_STOP_TIMEOUT identity=$identity")
+        }
+        worker = null
+        record?.release()
         Log.i(TAG, "CAPTURE_CLOSE identity=$identity")
         record = null
         identity = null
@@ -134,6 +139,7 @@ class UnifiedMicrophoneCapture(
 
     private companion object {
         const val TAG = "CAA-UnifiedMic"
+        const val STOP_JOIN_TIMEOUT_MS = 2_000L
         val NEXT_CREATION_ID = AtomicLong(0)
     }
 }
