@@ -15,6 +15,7 @@ import com.ai.assistance.operit.ui.floating.voice.SpeechInteractionManager
 import com.ai.assistance.operit.util.AppLogger
 import com.ai.assistance.operit.util.TtsSegmenter
 import com.ai.assistance.operit.util.stream.Stream
+import com.ai.assistance.operit.voice.unified.UnifiedVoiceUiBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
@@ -71,6 +72,7 @@ class FloatingFullscreenModeViewModel(
     private val wakePrefs by lazy { WakeWordPreferences(context.applicationContext) }
     private var inactivityTimeoutSeconds: Int = WakeWordPreferences.DEFAULT_VOICE_CALL_INACTIVITY_TIMEOUT_SECONDS
     private var prefsJob: Job? = null
+    private var unifiedSttJob: Job? = null
     private var inactivityJob: Job? = null
     private var lastVoiceActivityAtMs: Long = 0L
 
@@ -309,6 +311,10 @@ class FloatingFullscreenModeViewModel(
     // ===== 语音交互 =====
 
     fun startVoiceCapture() {
+        if (UnifiedVoiceUiBridge.enabled) {
+            AppLogger.d(TAG, "Unified voice owns capture; UI startVoiceCapture does not start legacy SpeechService")
+            return
+        }
         // 如果AI正在生成，尝试取消
         val lastMessage = floatContext.messages.lastOrNull()
         val isAiWorking = lastMessage?.sender == "think" || 
@@ -324,6 +330,10 @@ class FloatingFullscreenModeViewModel(
     }
 
     fun stopVoiceCapture(isCancel: Boolean) {
+        if (UnifiedVoiceUiBridge.enabled) {
+            AppLogger.d(TAG, "Unified voice owns capture; UI stopVoiceCapture does not stop microphone")
+            return
+        }
         speechManager.stopListening(isCancel)
     }
 
@@ -425,7 +435,17 @@ class FloatingFullscreenModeViewModel(
     // ===== 初始化与清理 =====
 
      suspend fun initialize(autoEnterVoiceChat: Boolean = false, wakeLaunched: Boolean = false) {
-         speechManager.initialize()
+         if (!UnifiedVoiceUiBridge.enabled) {
+             speechManager.initialize()
+         }
+         unifiedSttJob?.cancel()
+         if (UnifiedVoiceUiBridge.enabled) {
+             unifiedSttJob = coroutineScope.launch {
+                 UnifiedVoiceUiBridge.results.collect { result ->
+                     handleRecognitionResult(result.text, result.isFinal)
+                 }
+             }
+         }
          cancelPendingVoiceCaptureResume()
          prefsJob?.cancel()
          prefsJob = coroutineScope.launch {
