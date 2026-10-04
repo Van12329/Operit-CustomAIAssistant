@@ -8,9 +8,15 @@ class UnifiedVoicePrototypeControllerTest {
     @Test
     fun twentyCyclesUseOneCaptureIdentity() {
         val input = FakeUnifiedAudioInput()
-        val controller = UnifiedVoicePrototypeController(input, prerollSeconds = 1)
+        val diagnostics = mutableListOf<String>()
+        val controller = UnifiedVoicePrototypeController(
+            input,
+            prerollSeconds = 1,
+            diagnostics = diagnostics::add,
+        )
 
         assertTrue(controller.start())
+        assertTrue(diagnostics.single().startsWith("CONTINUITY_PASS event=START"))
         repeat(20) {
             input.emit(floatArrayOf(it.toFloat()))
             controller.onWakeDetected()
@@ -25,6 +31,8 @@ class UnifiedVoicePrototypeControllerTest {
         assertEquals(1, input.startCalls)
         assertEquals(0, input.stopCalls)
         assertEquals(UnifiedVoiceState.HOTWORD_ARMED, controller.runtime.stateMachine.state)
+        assertEquals(1 + 20 * 6, diagnostics.size)
+        assertTrue(diagnostics.all { it.startsWith("CONTINUITY_PASS") })
 
         controller.stop()
         assertEquals(1, input.stopCalls)
