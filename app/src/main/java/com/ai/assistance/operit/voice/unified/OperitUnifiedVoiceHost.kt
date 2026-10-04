@@ -41,15 +41,19 @@ class OperitUnifiedVoiceHost(
 
     @Volatile
     private var profileLoaded = false
+    private var profileFingerprint: Int? = null
 
     fun loadPersonalTemplates(templates: List<FloatArray>, threshold: Float = DEFAULT_WAKE_THRESHOLD): Boolean {
         val valid = templates.filter { it.isNotEmpty() && it.size % FEATURE_DIM == 0 }
         if (valid.isEmpty()) {
             profileLoaded = false
+            profileFingerprint = null
             wakeDetector.reset()
             AppLogger.w(TAG, "UNIFIED_WAKE_PROFILE unavailable")
             return false
         }
+        val fingerprint = valid.fold(1) { acc, item -> 31 * acc + item.contentHashCode() }
+        if (profileLoaded && profileFingerprint == fingerprint) return true
         wakeDetector.loadProfile(
             WakeProfile(
                 version = 1,
@@ -61,6 +65,7 @@ class OperitUnifiedVoiceHost(
             )
         )
         profileLoaded = true
+        profileFingerprint = fingerprint
         AppLogger.d(TAG, "UNIFIED_WAKE_PROFILE loaded count=" + valid.size)
         return true
     }
