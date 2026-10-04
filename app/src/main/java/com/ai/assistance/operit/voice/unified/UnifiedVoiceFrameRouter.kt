@@ -36,6 +36,10 @@ class UnifiedVoiceFrameRouter(
         }
     }
 
+    fun startSpeechRecognition(preroll: FloatArray = floatArrayOf()): Boolean {
+        return speechRecognizer?.startSession(preroll) ?: false
+    }
+
     fun finishSpeechRecognition() {
         speechRecognizer?.finishSession()
     }

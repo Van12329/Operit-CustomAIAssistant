@@ -80,9 +80,20 @@ class OperitUnifiedVoiceHost(
         return started
     }
 
-    fun onResponseStarted() = controller.onResponseStarted()
-    fun onBargeIn() = controller.onBargeIn()
-    fun onResponseFinished() = controller.onResponseFinished()
+    fun onResponseStarted() {
+        router.finishSpeechRecognition()
+        controller.onResponseStarted()
+    }
+
+    fun onBargeIn() {
+        controller.onBargeIn()
+        router.startSpeechRecognition()
+    }
+
+    fun onResponseFinished() {
+        controller.onResponseFinished()
+        router.startSpeechRecognition()
+    }
 
     fun onSessionEnded() {
         router.finishSpeechRecognition()

@@ -782,6 +782,7 @@ class AIForegroundService : Service() {
     @Volatile
     private var wakeSpeechProvider: SpeechService? = null
     private var unifiedVoiceHost: OperitUnifiedVoiceHost? = null
+    private var unifiedVoiceCommandJob: Job? = null
     @Volatile private var unifiedVoiceRunning: Boolean = false
     private val workflowRepository by lazy { WorkflowRepository(applicationContext) }
     private val externalHttpPreferences by lazy { ExternalHttpApiPreferences.getInstance(applicationContext) }
@@ -1003,8 +1004,28 @@ class AIForegroundService : Service() {
         observeBackgroundKeepAlivePreference()
         observeChatRuntimeStats()
         startWakeMonitoring()
+        startUnifiedVoiceCommandBridge()
         startExternalHttpMonitoring()
         AppLogger.d(TAG, "AI 前台服务已启动。")
+    }
+
+    private fun startUnifiedVoiceCommandBridge() {
+        if (!UNIFIED_VOICE_ENABLED || unifiedVoiceCommandJob?.isActive == true) return
+        unifiedVoiceCommandJob = serviceScope.launch {
+            UnifiedVoiceUiBridge.commands.collect { command ->
+                val host = unifiedVoiceHost ?: return@collect
+                runCatching {
+                    when (command) {
+                        UnifiedVoiceUiBridge.Command.ResponseStarted -> host.onResponseStarted()
+                        UnifiedVoiceUiBridge.Command.ResponseFinished -> host.onResponseFinished()
+                        UnifiedVoiceUiBridge.Command.BargeIn -> host.onBargeIn()
+                        UnifiedVoiceUiBridge.Command.SessionEnded -> host.onSessionEnded()
+                    }
+                }.onFailure { error ->
+                    AppLogger.e(TAG, "UNIFIED_COMMAND failed command=$command", error)
+                }
+            }
+        }
     }
 
     private fun observeRuntimeTaskViewPreference() {
@@ -1354,6 +1375,8 @@ class AIForegroundService : Service() {
         isRunning.set(false)
         updateAiBusyState(false)
         hideKeepAliveOverlay()
+        unifiedVoiceCommandJob?.cancel()
+        unifiedVoiceCommandJob = null
         stopWakeMonitoring()
         unifiedVoiceHost?.close()
         unifiedVoiceHost = null
