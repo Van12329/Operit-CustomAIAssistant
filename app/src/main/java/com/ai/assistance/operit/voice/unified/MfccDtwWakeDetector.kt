@@ -1,40 +1,79 @@
 package com.ai.assistance.operit.voice.unified
 
 /**
- * Converts fixed PCM windows into Backend-A features.
- * The feature encoder is injected so the detector remains independent from Android lifecycle.
+ * Backend A: historical Operit MFCC/DTW matching with PCM/VAD segmentation separated
+ * from capture ownership. The detector never opens a microphone or owns Android lifecycle.
  */
 class MfccDtwWakeDetector(
+    private val speechGate: SpeechGate,
     private val featureEncoder: (FloatArray) -> FloatArray,
     private val matcher: MfccDtwWakeMatcher = MfccDtwWakeMatcher(),
-    private val windowSamples: Int = 16_000,
+    private val sampleRate: Int = 16_000,
+    private val minSegmentMs: Int = 250,
+    private val maxSegmentMs: Int = 1_600,
+    private val endSilenceMs: Int = 350,
 ) : WakeDetector {
     private var profile: WakeProfile? = null
-    private val window = PcmRingBuffer(windowSamples)
+    private val speech = ArrayList<Float>()
+    private var seenSpeech = false
+    private var silenceSamples = 0
+    private var totalSamples = 0
 
     override fun loadProfile(profile: WakeProfile) {
         require(profile.backendId == BACKEND_ID) { "unsupported backend: ${profile.backendId}" }
+        require(profile.sampleRate == sampleRate) { "sample-rate mismatch: ${profile.sampleRate} != $sampleRate" }
         this.profile = profile
-        window.clear()
+        resetSegment()
     }
 
     override fun process(pcm: FloatArray): WakeResult {
         val p = profile ?: return WakeResult(false)
-        window.append(pcm)
-        if (window.sizeSamples() < windowSamples) return WakeResult(false)
+        if (pcm.isEmpty()) return WakeResult(false)
 
-        val features = featureEncoder(window.snapshotLast())
-        val match = matcher.match(
-            features = features,
-            templates = p.profileData,
-            threshold = p.threshold,
-        )
-        return WakeResult(detected = match.detected, score = match.best)
+        val isSpeech = speechGate.isSpeech(pcm)
+        totalSamples += pcm.size
+
+        if (isSpeech) {
+            seenSpeech = true
+            silenceSamples = 0
+            for (sample in pcm) speech.add(sample)
+        } else if (seenSpeech) {
+            silenceSamples += pcm.size
+        }
+
+        val maxReached = totalSamples >= msToSamples(maxSegmentMs)
+        val speechEnded = seenSpeech && silenceSamples >= msToSamples(endSilenceMs)
+        if (!maxReached && !speechEnded) return WakeResult(false)
+
+        val speechSamples = speech.size
+        val longEnough = speechSamples >= msToSamples(minSegmentMs)
+        val result = if (longEnough) {
+            val segment = FloatArray(speechSamples)
+            for (i in segment.indices) segment[i] = speech[i]
+            val features = featureEncoder(segment)
+            val match = matcher.match(
+                features = features,
+                templates = p.profileData,
+                threshold = p.threshold,
+            )
+            WakeResult(detected = match.detected, score = match.best)
+        } else {
+            WakeResult(false)
+        }
+        resetSegment()
+        return result
     }
 
-    override fun reset() {
-        window.clear()
+    override fun reset() = resetSegment()
+
+    private fun resetSegment() {
+        speech.clear()
+        seenSpeech = false
+        silenceSamples = 0
+        totalSamples = 0
     }
+
+    private fun msToSamples(ms: Int): Int = (sampleRate * ms) / 1000
 
     companion object {
         const val BACKEND_ID = "mfcc_dtw_v1"
