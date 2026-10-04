@@ -16,6 +16,7 @@ object PersonalWakeEnrollment {
         maxRecordMs: Long = 6000L,
         minSpeechMs: Long = 250L,
         endSilenceMs: Long = 350L,
+        onTrimmedPcm: ((ShortArray) -> Unit)? = null,
     ): FloatArray? = withContext(Dispatchers.Default) {
         val sampleRate = 16000
         val frameSize = 512
@@ -85,6 +86,11 @@ object PersonalWakeEnrollment {
             for (i in pcm.indices) {
                 pcm[i] = speech[i]
             }
+
+            // Stable enrollment seam for pluggable wake backends.
+            // The existing UI/storage path still receives MFCC below; new encoders may consume
+            // the same VAD-trimmed PCM without creating another recorder.
+            onTrimmedPcm?.invoke(pcm.copyOf())
             PersonalWakeFeatureExtractor.extractFeatures(pcm, pcm.size)
         } finally {
             try {
