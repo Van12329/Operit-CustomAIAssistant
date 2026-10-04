@@ -19,7 +19,7 @@ on:
           - ':app:assembleClone'
           - ':app:bundleRelease'
   push:
-    branches: [main, customai/dev, feature/s2s-unified-audio-prototype]
+    branches: [main, customai/dev]
     paths:
       - .github/workflows/android-build.yml
       - .gitmodules
