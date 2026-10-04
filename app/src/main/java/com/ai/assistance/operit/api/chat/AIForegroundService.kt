@@ -582,11 +582,12 @@ class AIForegroundService : Service() {
                 !wakeListeningSuspendedForExternalRecording
 
         if (!shouldRun) {
-            if (unifiedVoiceRunning) {
+            if (unifiedVoiceRunning || unifiedVoiceHost != null) {
                 AppLogger.d(TAG, "UNIFIED_CAPTURE stop suspendedExternal=" + wakeListeningSuspendedForExternalRecording)
                 unifiedVoiceHost?.close()
                 unifiedVoiceHost = null
                 unifiedVoiceRunning = false
+                wakeListeningMicActiveForRecordingDetection = false
             }
             return
         }
