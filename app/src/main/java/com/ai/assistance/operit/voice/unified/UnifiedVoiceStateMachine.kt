@@ -19,26 +19,31 @@ class UnifiedVoiceStateMachine(
     var state: UnifiedVoiceState = initial
         private set
 
+    @Synchronized
     fun onWakeDetected() {
         require(state == UnifiedVoiceState.HOTWORD_ARMED) { "wake is only valid while armed: $state" }
         state = UnifiedVoiceState.SESSION_LISTENING
     }
 
+    @Synchronized
     fun onResponseStarted() {
         require(state == UnifiedVoiceState.SESSION_LISTENING) { "response requires listening: $state" }
         state = UnifiedVoiceState.SPEAKING
     }
 
+    @Synchronized
     fun onBargeIn() {
         require(state == UnifiedVoiceState.SPEAKING) { "barge-in requires speaking: $state" }
         state = UnifiedVoiceState.SESSION_LISTENING
     }
 
+    @Synchronized
     fun onResponseFinished() {
         require(state == UnifiedVoiceState.SPEAKING) { "response finish requires speaking: $state" }
         state = UnifiedVoiceState.SESSION_LISTENING
     }
 
+    @Synchronized
     fun onSessionEnded() {
         require(state == UnifiedVoiceState.SESSION_LISTENING || state == UnifiedVoiceState.SPEAKING) {
             "session end requires an active session: $state"
@@ -46,10 +51,12 @@ class UnifiedVoiceStateMachine(
         state = UnifiedVoiceState.HOTWORD_ARMED
     }
 
+    @Synchronized
     fun onCallSuspended() {
         state = UnifiedVoiceState.SUSPENDED_BY_CALL
     }
 
+    @Synchronized
     fun onCallEnded() {
         require(state == UnifiedVoiceState.SUSPENDED_BY_CALL) { "call end requires suspension: $state" }
         state = UnifiedVoiceState.HOTWORD_ARMED
