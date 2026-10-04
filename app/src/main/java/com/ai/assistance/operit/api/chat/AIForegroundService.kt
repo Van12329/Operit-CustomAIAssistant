@@ -50,6 +50,7 @@ import com.ai.assistance.operit.data.preferences.DisplayPreferencesManager
 import com.ai.assistance.operit.data.preferences.WakeWordPreferences
 import com.ai.assistance.operit.data.repository.WorkflowRepository
 import com.ai.assistance.operit.ui.main.MainActivity
+import com.ai.assistance.operit.voice.unified.OperitUnifiedVoiceHost
 import com.ai.assistance.operit.util.WaifuMessageProcessor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -102,6 +103,8 @@ class AIForegroundService : Service() {
 
     companion object {
         private const val TAG = "AIForegroundService"
+        // Clone validation path. Original Operit installation is not modified.
+        private const val UNIFIED_VOICE_ENABLED = true
         private const val NOTIFICATION_ID = 1
         private const val REPLY_NOTIFICATION_ID = 2001
         private const val CHANNEL_ID = "AI_SERVICE_CHANNEL"
@@ -549,6 +552,12 @@ class AIForegroundService : Service() {
     }
 
     private suspend fun applyWakeListeningStateLocked() {
+        if (UNIFIED_VOICE_ENABLED) {
+            applyUnifiedVoiceStateLocked()
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(NOTIFICATION_ID, createNotification())
+            return
+        }
         val shouldListen =
             wakeListeningEnabled &&
                 !wakeListeningSuspendedForIme &&
@@ -564,6 +573,52 @@ class AIForegroundService : Service() {
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(NOTIFICATION_ID, createNotification())
+    }
+
+    private suspend fun applyUnifiedVoiceStateLocked() {
+        val shouldRun =
+            wakeListeningEnabled &&
+                !wakeListeningSuspendedForIme &&
+                !wakeListeningSuspendedForExternalRecording
+
+        if (!shouldRun) {
+            if (unifiedVoiceRunning) {
+                AppLogger.d(TAG, "UNIFIED_CAPTURE stop suspendedExternal=" + wakeListeningSuspendedForExternalRecording)
+                unifiedVoiceHost?.close()
+                unifiedVoiceHost = null
+                unifiedVoiceRunning = false
+            }
+            return
+        }
+
+        val host = unifiedVoiceHost ?: OperitUnifiedVoiceHost(
+            context = applicationContext,
+            onWake = {
+                AppLogger.d(TAG, "UNIFIED_WAKE detected")
+                triggerWakeLaunch()
+            },
+            onSpeechResult = { result ->
+                AppLogger.d(
+                    TAG,
+                    "UNIFIED_STT " + (if (result.isFinal) "final" else "partial") +
+                        " language=" + result.languageTag + " text='" + result.text + "'"
+                )
+            },
+        ).also { unifiedVoiceHost = it }
+
+        val profileReady = host.loadPersonalTemplates(personalWakeTemplates)
+        if (!profileReady) {
+            AppLogger.w(TAG, "UNIFIED_CAPTURE not started: personal wake enrollment required")
+            return
+        }
+        if (!unifiedVoiceRunning) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                tryPromoteToMicrophoneForeground()
+            }
+            unifiedVoiceRunning = host.start()
+            wakeListeningMicActiveForRecordingDetection = unifiedVoiceRunning
+            AppLogger.d(TAG, "UNIFIED_CAPTURE running=" + unifiedVoiceRunning)
+        }
     }
 
     private fun startRecordingStateMonitoring() {
@@ -723,6 +778,8 @@ class AIForegroundService : Service() {
     private val wakePrefs by lazy { WakeWordPreferences(applicationContext) }
     @Volatile
     private var wakeSpeechProvider: SpeechService? = null
+    private var unifiedVoiceHost: OperitUnifiedVoiceHost? = null
+    @Volatile private var unifiedVoiceRunning: Boolean = false
     private val workflowRepository by lazy { WorkflowRepository(applicationContext) }
     private val externalHttpPreferences by lazy { ExternalHttpApiPreferences.getInstance(applicationContext) }
 
@@ -1295,6 +1352,9 @@ class AIForegroundService : Service() {
         updateAiBusyState(false)
         hideKeepAliveOverlay()
         stopWakeMonitoring()
+        unifiedVoiceHost?.close()
+        unifiedVoiceHost = null
+        unifiedVoiceRunning = false
         AppLogger.d(TAG, "AI 前台服务已销毁。")
     }
 
