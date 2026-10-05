@@ -59,6 +59,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -149,6 +151,7 @@ class AIForegroundService : Service() {
 
         // 静态标志，用于从外部检查服务是否正在运行
         val isRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+        @Volatile private var activeInstance: AIForegroundService? = null
         private val activeReplyNotificationTags = ConcurrentHashMap.newKeySet<String>()
         private val externalHttpStateFlow = MutableStateFlow(ExternalChatHttpState())
         val externalHttpState = externalHttpStateFlow.asStateFlow()
@@ -423,17 +426,13 @@ class AIForegroundService : Service() {
             }
         }
 
-        fun setWakeListeningSuspendedForEnrollment(context: Context, active: Boolean) {
-            if (!isRunning.get()) return
-            val intent = Intent(context.applicationContext, AIForegroundService::class.java).apply {
-                action = ACTION_SET_WAKE_LISTENING_SUSPENDED_FOR_ENROLLMENT
-                putExtra(EXTRA_ENROLLMENT_ACTIVE, active)
-            }
-            try {
-                context.applicationContext.startService(intent)
-            } catch (e: Exception) {
-                AppLogger.e(TAG, "Failed to request enrollment wake listening suspend: ${e.message}", e)
-            }
+        suspend fun collectUnifiedEnrollmentPcm(
+            maxRecordMs: Long = 6000L,
+            minSpeechMs: Long = 250L,
+            endSilenceMs: Long = 350L,
+        ): ShortArray? {
+            val service = activeInstance ?: return null
+            return service.collectEnrollmentPcm(maxRecordMs, minSpeechMs, endSilenceMs)
         }
 
         fun ensureMicrophoneForeground(context: Context, forceStart: Boolean = false) {
@@ -550,6 +549,55 @@ class AIForegroundService : Service() {
         wakeListeningSuspendedForExternalRecording = externalRecording
         AppLogger.d(TAG, "Wake listening suspended by external recording: $wakeListeningSuspendedForExternalRecording")
         applyWakeListeningState()
+    }
+
+    private suspend fun collectEnrollmentPcm(
+        maxRecordMs: Long,
+        minSpeechMs: Long,
+        endSilenceMs: Long,
+    ): ShortArray? {
+        val host = unifiedVoiceHost ?: return null
+        val sampleRate = 16_000
+        val frameMs = 32L
+        return suspendCancellableCoroutine { continuation ->
+            val speech = ArrayList<Short>()
+            val gate = com.ai.assistance.operit.voice.unified.OperitSileroSpeechGate(applicationContext)
+            var seenSpeech = false
+            var speechMs = 0L
+            var silenceMs = 0L
+            val startedAt = System.currentTimeMillis()
+            var subscription: AutoCloseable? = null
+            fun finish(value: ShortArray?) {
+                runCatching { subscription?.close() }
+                runCatching { gate.close() }
+                if (continuation.isActive) continuation.resume(value)
+            }
+            subscription = host.subscribePcm { frame ->
+                if (!continuation.isActive) return@subscribePcm
+                if (System.currentTimeMillis() - startedAt > maxRecordMs) {
+                    finish(null)
+                    return@subscribePcm
+                }
+                val isSpeech = gate.isSpeech(frame)
+                if (isSpeech) {
+                    seenSpeech = true
+                    silenceMs = 0L
+                    speechMs += frameMs
+                    frame.forEach { sample ->
+                        speech.add((sample.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
+                    }
+                } else if (seenSpeech) {
+                    silenceMs += frameMs
+                    if (silenceMs >= endSilenceMs) {
+                        finish(if (speechMs >= minSpeechMs) speech.toShortArray() else null)
+                    }
+                }
+            }
+            continuation.invokeOnCancellation {
+                runCatching { subscription?.close() }
+                runCatching { gate.close() }
+            }
+        }
     }
 
     private fun updateWakeListeningSuspendedForEnrollment(active: Boolean) {
@@ -1191,6 +1239,7 @@ class AIForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        activeInstance = this
         if (intent?.action == ACTION_EXIT_APP) {
             isRunning.set(false)
             updateAiBusyState(false)
@@ -1391,6 +1440,7 @@ class AIForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        if (activeInstance === this) activeInstance = null
         val stoppedPort = externalHttpCurrentPort ?: externalHttpStateFlow.value.port
         runCatching {
             externalHttpServer?.stopServer()
