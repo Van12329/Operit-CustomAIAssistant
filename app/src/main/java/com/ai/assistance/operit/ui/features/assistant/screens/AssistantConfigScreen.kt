@@ -31,6 +31,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ai.assistance.operit.R
 import com.ai.assistance.operit.data.preferences.WakeWordPreferences
 import com.ai.assistance.operit.api.speech.PersonalWakeEnrollment
+import com.ai.assistance.operit.api.chat.AIForegroundService
+import kotlinx.coroutines.delay
 import com.ai.assistance.operit.ui.features.assistant.components.AvatarConfigSection
 import com.ai.assistance.operit.ui.features.assistant.components.AvatarPreviewSection
 import com.ai.assistance.operit.ui.features.assistant.components.CompactSwitchRow
@@ -636,25 +638,52 @@ fun AssistantConfigScreen() {
                             stepRow(1, step1) {
                                 recordingStep = 1
                                 scope.launch {
-                                    val feat = PersonalWakeEnrollment.recordOneTemplate(context)
-                                    if (feat != null) step1 = feat
-                                    recordingStep = 0
+                                    AIForegroundService.setWakeListeningSuspendedForEnrollment(context, true)
+                                    try {
+                                        // The service owns the production recorder. Give its serialized
+                                        // state transition time to release that recorder before this
+                                        // explicit, short-lived enrollment capture opens the microphone.
+                                        delay(250L)
+                                        val feat = PersonalWakeEnrollment.recordOneTemplate(context)
+                                        if (feat != null) step1 = feat
+                                    } finally {
+                                        AIForegroundService.setWakeListeningSuspendedForEnrollment(context, false)
+                                        recordingStep = 0
+                                    }
                                 }
                             }
                             stepRow(2, step2) {
                                 recordingStep = 2
                                 scope.launch {
-                                    val feat = PersonalWakeEnrollment.recordOneTemplate(context)
-                                    if (feat != null) step2 = feat
-                                    recordingStep = 0
+                                    AIForegroundService.setWakeListeningSuspendedForEnrollment(context, true)
+                                    try {
+                                        // The service owns the production recorder. Give its serialized
+                                        // state transition time to release that recorder before this
+                                        // explicit, short-lived enrollment capture opens the microphone.
+                                        delay(250L)
+                                        val feat = PersonalWakeEnrollment.recordOneTemplate(context)
+                                        if (feat != null) step2 = feat
+                                    } finally {
+                                        AIForegroundService.setWakeListeningSuspendedForEnrollment(context, false)
+                                        recordingStep = 0
+                                    }
                                 }
                             }
                             stepRow(3, step3) {
                                 recordingStep = 3
                                 scope.launch {
-                                    val feat = PersonalWakeEnrollment.recordOneTemplate(context)
-                                    if (feat != null) step3 = feat
-                                    recordingStep = 0
+                                    AIForegroundService.setWakeListeningSuspendedForEnrollment(context, true)
+                                    try {
+                                        // The service owns the production recorder. Give its serialized
+                                        // state transition time to release that recorder before this
+                                        // explicit, short-lived enrollment capture opens the microphone.
+                                        delay(250L)
+                                        val feat = PersonalWakeEnrollment.recordOneTemplate(context)
+                                        if (feat != null) step3 = feat
+                                    } finally {
+                                        AIForegroundService.setWakeListeningSuspendedForEnrollment(context, false)
+                                        recordingStep = 0
+                                    }
                                 }
                             }
                         }
