@@ -213,12 +213,29 @@ jobs:
         run: |
           set -euo pipefail
           case "$EVENT_NAME" in
-            push) gradle_task=assembleDebug ;;
+            push)
+              if [[ "$GITHUB_REF" == "refs/heads/feature/s2s-unified-audio-prototype" ]]; then
+                gradle_task=:app:assembleClone
+              else
+                gradle_task=assembleDebug
+              fi
+              ;;
             workflow_dispatch) gradle_task="$DISPATCH_GRADLE_TASK" ;;
             *) echo "Unsupported workflow event: $EVENT_NAME" >&2; exit 2 ;;
           esac
           chmod +x ./gradlew
           ./gradlew "$gradle_task" --stacktrace --no-daemon
+
+      - name: Verify clone package identity
+        if: github.ref == 'refs/heads/feature/s2s-unified-audio-prototype'
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/clone/app-clone.apk"
+          test -s "$apk"
+          badging="$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | head -n 1)"
+          echo "$badging"
+          grep -q "package: name='com.ai.assistance.operit.clone'" <<<"$badging"
 
       - name: Run unified voice unit tests
         if: github.ref == 'refs/heads/feature/s2s-unified-audio-prototype'
