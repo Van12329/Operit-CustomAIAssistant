@@ -616,6 +616,7 @@ class AIForegroundService : Service() {
                 var seenSpeech = false
                 var speechMs = 0L
                 var silenceMs = 0L
+                var utteranceStarted = false
                 val frameMs = 32L
                 var subscription: AutoCloseable? = null
                 var finished = false
@@ -634,13 +635,18 @@ class AIForegroundService : Service() {
                     val isSpeech = gate.isSpeech(frame)
                     if (isSpeech) {
                         seenSpeech = true
+                        utteranceStarted = true
                         silenceMs = 0L
                         speechMs += frameMs
+                    } else if (seenSpeech) {
+                        silenceMs += frameMs
+                    }
+                    if (utteranceStarted) {
                         frame.forEach { sample ->
                             speech.add((sample.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
                         }
-                    } else if (seenSpeech) {
-                        silenceMs += frameMs
+                    }
+                    if (!isSpeech && seenSpeech) {
                         if (silenceMs >= endSilenceMs) {
                             finish(
                                 if (speechMs >= minSpeechMs) speech.toShortArray() else null,
