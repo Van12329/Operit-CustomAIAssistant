@@ -106,6 +106,10 @@ class OperitUnifiedVoiceHost(
         controller.onSessionEnded()
     }
 
+    fun setEnrollmentActive(active: Boolean) {
+        router.setEnrollmentActive(active)
+    }
+
     fun subscribePcm(consumer: (FloatArray) -> Unit): AutoCloseable =
         controller.runtime.bus.subscribe { frame -> consumer(frame.copyOf()) }
 
