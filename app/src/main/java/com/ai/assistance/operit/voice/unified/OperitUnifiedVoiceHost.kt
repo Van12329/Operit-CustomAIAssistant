@@ -80,6 +80,12 @@ class OperitUnifiedVoiceHost(
         return started
     }
 
+    fun onSessionStarted() {
+        if (controller.runtime.stateMachine.state != UnifiedVoiceState.HOTWORD_ARMED) return
+        controller.onSessionStarted()
+        router.startSpeechRecognition()
+    }
+
     fun onResponseStarted() {
         router.finishSpeechRecognition()
         controller.onResponseStarted()

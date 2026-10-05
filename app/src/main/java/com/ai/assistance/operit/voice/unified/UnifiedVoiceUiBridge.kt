@@ -8,6 +8,7 @@ object UnifiedVoiceUiBridge {
     const val enabled: Boolean = true
 
     sealed interface Command {
+        data object SessionStarted : Command
         data object ResponseStarted : Command
         data object ResponseFinished : Command
         data object BargeIn : Command
@@ -30,6 +31,7 @@ object UnifiedVoiceUiBridge {
         _results.tryEmit(result)
     }
 
+    fun sessionStarted() { _commands.tryEmit(Command.SessionStarted) }
     fun responseStarted() { _commands.tryEmit(Command.ResponseStarted) }
     fun responseFinished() { _commands.tryEmit(Command.ResponseFinished) }
     fun bargeIn() { _commands.tryEmit(Command.BargeIn) }

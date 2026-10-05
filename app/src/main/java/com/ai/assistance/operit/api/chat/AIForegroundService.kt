@@ -1016,6 +1016,7 @@ class AIForegroundService : Service() {
                 val host = unifiedVoiceHost ?: return@collect
                 runCatching {
                     when (command) {
+                        UnifiedVoiceUiBridge.Command.SessionStarted -> host.onSessionStarted()
                         UnifiedVoiceUiBridge.Command.ResponseStarted -> host.onResponseStarted()
                         UnifiedVoiceUiBridge.Command.ResponseFinished -> host.onResponseFinished()
                         UnifiedVoiceUiBridge.Command.BargeIn -> host.onBargeIn()

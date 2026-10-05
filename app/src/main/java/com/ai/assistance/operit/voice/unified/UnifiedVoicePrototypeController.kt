@@ -28,6 +28,11 @@ class UnifiedVoicePrototypeController(
         reportContinuity("WAKE_TO_SESSION")
     }
 
+    fun onSessionStarted() {
+        runtime.stateMachine.onSessionStarted()
+        reportContinuity("MANUAL_TO_SESSION")
+    }
+
     fun onResponseStarted() {
         runtime.stateMachine.onResponseStarted()
         reportContinuity("LISTENING_TO_SPEAKING")

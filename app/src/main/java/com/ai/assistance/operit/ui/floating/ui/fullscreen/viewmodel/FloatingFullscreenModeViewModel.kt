@@ -314,7 +314,8 @@ class FloatingFullscreenModeViewModel(
 
     fun startVoiceCapture() {
         if (UnifiedVoiceUiBridge.enabled) {
-            AppLogger.d(TAG, "Unified voice owns capture; UI startVoiceCapture does not start legacy SpeechService")
+            UnifiedVoiceUiBridge.sessionStarted()
+            AppLogger.d(TAG, "Unified voice owns capture; UI startVoiceCapture requests unified session")
             return
         }
         // 如果AI正在生成，尝试取消

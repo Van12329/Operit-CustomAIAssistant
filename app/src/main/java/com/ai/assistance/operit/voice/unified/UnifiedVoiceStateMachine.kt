@@ -20,8 +20,11 @@ class UnifiedVoiceStateMachine(
         private set
 
     @Synchronized
-    fun onWakeDetected() {
-        require(state == UnifiedVoiceState.HOTWORD_ARMED) { "wake is only valid while armed: $state" }
+    fun onWakeDetected() = onSessionStarted()
+
+    @Synchronized
+    fun onSessionStarted() {
+        require(state == UnifiedVoiceState.HOTWORD_ARMED) { "session start is only valid while armed: $state" }
         state = UnifiedVoiceState.SESSION_LISTENING
     }
 
