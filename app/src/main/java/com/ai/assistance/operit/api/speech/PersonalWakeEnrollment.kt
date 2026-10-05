@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioRecord
+import com.ai.assistance.operit.util.AppLogger
 import android.media.MediaRecorder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -35,6 +36,12 @@ object PersonalWakeEnrollment {
             (minBufferSize.coerceAtLeast(frameSize) * 2)
         )
 
+        if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
+            AppLogger.e("PersonalWakeEnrollment", "Enrollment AudioRecord failed to initialize")
+            audioRecord.release()
+            return@withContext null
+        }
+
         val vad = OnnxSileroVad(
             context = context.applicationContext,
             sampleRate = sampleRate,
@@ -53,7 +60,16 @@ object PersonalWakeEnrollment {
             var speechMs = 0L
 
             val startedAt = System.currentTimeMillis()
-            audioRecord.startRecording()
+            try {
+                audioRecord.startRecording()
+            } catch (e: IllegalStateException) {
+                AppLogger.e("PersonalWakeEnrollment", "Enrollment AudioRecord failed to start", e)
+                return@withContext null
+            }
+            if (audioRecord.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                AppLogger.e("PersonalWakeEnrollment", "Enrollment AudioRecord did not enter recording state")
+                return@withContext null
+            }
 
             while (true) {
                 val now = System.currentTimeMillis()
