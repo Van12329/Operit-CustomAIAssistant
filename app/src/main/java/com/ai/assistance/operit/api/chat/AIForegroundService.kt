@@ -48,6 +48,7 @@ import com.ai.assistance.operit.services.FloatingChatService
 import com.ai.assistance.operit.services.UIDebuggerService
 import com.ai.assistance.operit.data.preferences.DisplayPreferencesManager
 import com.ai.assistance.operit.data.preferences.WakeWordPreferences
+import com.ai.assistance.operit.data.preferences.OperitWakeProfileRepository
 import com.ai.assistance.operit.data.repository.WorkflowRepository
 import com.ai.assistance.operit.ui.main.MainActivity
 import com.ai.assistance.operit.voice.unified.OperitUnifiedVoiceHost
@@ -1619,11 +1620,8 @@ class AIForegroundService : Service() {
                 }
 
                 launch {
-                    wakePrefs.personalWakeTemplatesFlow.collectLatest { templates ->
-                        personalWakeTemplates = templates.mapNotNull { t ->
-                            val feats = t.features
-                            if (feats.isEmpty()) null else feats.toFloatArray()
-                        }
+                    OperitWakeProfileRepository(wakePrefs).templates.collectLatest { templates ->
+                        personalWakeTemplates = templates
                         AppLogger.d(TAG, "个人化唤醒模板更新: count=${personalWakeTemplates.size}")
                         applyWakeListeningState()
                     }
