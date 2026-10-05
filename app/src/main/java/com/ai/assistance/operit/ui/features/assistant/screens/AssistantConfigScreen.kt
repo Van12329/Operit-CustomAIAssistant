@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ai.assistance.operit.R
 import com.ai.assistance.operit.data.preferences.WakeWordPreferences
+import com.ai.assistance.operit.data.preferences.OperitWakeProfileRepository
 import com.ai.assistance.operit.api.speech.PersonalWakeEnrollment
 import com.ai.assistance.operit.ui.features.assistant.components.AvatarConfigSection
 import com.ai.assistance.operit.ui.features.assistant.components.AvatarPreviewSection
@@ -54,6 +55,7 @@ fun AssistantConfigScreen() {
         }
 
     val wakePrefs = remember { WakeWordPreferences(context.applicationContext) }
+    val wakeProfileRepository = remember { OperitWakeProfileRepository(wakePrefs) }
     val wakeListeningEnabled by wakePrefs.alwaysListeningEnabledFlow.collectAsState(initial = WakeWordPreferences.DEFAULT_ALWAYS_LISTENING_ENABLED)
     val wakePhrase by wakePrefs.wakePhraseFlow.collectAsState(initial = WakeWordPreferences.DEFAULT_WAKE_PHRASE)
     val wakePhraseRegexEnabled by wakePrefs.wakePhraseRegexEnabledFlow.collectAsState(initial = WakeWordPreferences.DEFAULT_WAKE_PHRASE_REGEX_ENABLED)
@@ -369,7 +371,7 @@ fun AssistantConfigScreen() {
                                     enabled = personalWakeTemplates.isNotEmpty(),
                                     onClick = {
                                         coroutineScope.launch {
-                                            wakePrefs.savePersonalWakeTemplates(emptyList())
+                                            wakeProfileRepository.saveTemplates(emptyList())
                                         }
                                     },
                                 ) {
@@ -664,11 +666,7 @@ fun AssistantConfigScreen() {
                             onClick = {
                                 if (!canSave) return@TextButton
                                 coroutineScope.launch {
-                                    wakePrefs.savePersonalWakeTemplates(
-                                        completed.map { f ->
-                                            WakeWordPreferences.PersonalWakeTemplate(features = f.toList())
-                                        }
-                                    )
+                                    wakeProfileRepository.saveTemplates(completed)
                                 }
                                 personalWakeConfigDialogVisible = false
                             }
