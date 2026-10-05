@@ -130,6 +130,10 @@ class AIForegroundService : Service() {
             "com.ai.assistance.operit.action.SET_WAKE_LISTENING_SUSPENDED_FOR_FLOATING_FULLSCREEN"
         private const val EXTRA_FLOATING_FULLSCREEN_ACTIVE = "extra_floating_fullscreen_active"
 
+        private const val ACTION_SET_WAKE_LISTENING_SUSPENDED_FOR_ENROLLMENT =
+            "com.ai.assistance.operit.action.SET_WAKE_LISTENING_SUSPENDED_FOR_ENROLLMENT"
+        private const val EXTRA_ENROLLMENT_ACTIVE = "extra_enrollment_active"
+
         const val ACTION_PREPARE_WAKE_HANDOFF =
             "com.ai.assistance.operit.action.PREPARE_WAKE_HANDOFF"
 
@@ -419,6 +423,19 @@ class AIForegroundService : Service() {
             }
         }
 
+        fun setWakeListeningSuspendedForEnrollment(context: Context, active: Boolean) {
+            if (!isRunning.get()) return
+            val intent = Intent(context.applicationContext, AIForegroundService::class.java).apply {
+                action = ACTION_SET_WAKE_LISTENING_SUSPENDED_FOR_ENROLLMENT
+                putExtra(EXTRA_ENROLLMENT_ACTIVE, active)
+            }
+            try {
+                context.applicationContext.startService(intent)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Failed to request enrollment wake listening suspend: ${e.message}", e)
+            }
+        }
+
         fun ensureMicrophoneForeground(context: Context, forceStart: Boolean = false) {
             val appContext = context.applicationContext
             if (!forceStart && !isRunning.get() && !hasPersistentForegroundResponsibilityConfigured(appContext)) {
@@ -535,6 +552,13 @@ class AIForegroundService : Service() {
         applyWakeListeningState()
     }
 
+    private fun updateWakeListeningSuspendedForEnrollment(active: Boolean) {
+        if (wakeListeningSuspendedForEnrollment == active) return
+        wakeListeningSuspendedForEnrollment = active
+        AppLogger.d(TAG, "Wake listening suspended by enrollment: $wakeListeningSuspendedForEnrollment")
+        applyWakeListeningState()
+    }
+
     private fun updateWakeListeningSuspendedForFloatingFullscreen(active: Boolean) {
         if (wakeListeningSuspendedForFloatingFullscreen == active) return
         wakeListeningSuspendedForFloatingFullscreen = active
@@ -580,7 +604,8 @@ class AIForegroundService : Service() {
         val shouldRun =
             wakeListeningEnabled &&
                 !wakeListeningSuspendedForIme &&
-                !wakeListeningSuspendedForExternalRecording
+                !wakeListeningSuspendedForExternalRecording &&
+                !wakeListeningSuspendedForEnrollment
 
         if (!shouldRun) {
             if (unifiedVoiceRunning || unifiedVoiceHost != null) {
@@ -829,6 +854,9 @@ class AIForegroundService : Service() {
 
     @Volatile
     private var wakeListeningSuspendedForFloatingFullscreen: Boolean = false
+
+    @Volatile
+    private var wakeListeningSuspendedForEnrollment: Boolean = false
 
     private var audioManager: AudioManager? = null
     private var audioRecordingCallback: AudioManager.AudioRecordingCallback? = null
@@ -1269,6 +1297,12 @@ class AIForegroundService : Service() {
         if (intent?.action == ACTION_SET_WAKE_LISTENING_SUSPENDED_FOR_IME) {
             val imeVisible = intent.getBooleanExtra(EXTRA_IME_VISIBLE, false)
             updateWakeListeningSuspendedForIme(imeVisible)
+            return START_NOT_STICKY
+        }
+
+        if (intent?.action == ACTION_SET_WAKE_LISTENING_SUSPENDED_FOR_ENROLLMENT) {
+            val active = intent.getBooleanExtra(EXTRA_ENROLLMENT_ACTIVE, false)
+            updateWakeListeningSuspendedForEnrollment(active)
             return START_NOT_STICKY
         }
 
