@@ -20,6 +20,7 @@ object PersonalWakeEnrollment {
         onTrimmedPcm: ((ShortArray) -> Unit)? = null,
     ): FloatArray? = withContext(Dispatchers.Default) {
         val pcm = AIForegroundService.collectUnifiedEnrollmentPcm(
+            context = context,
             maxRecordMs = maxRecordMs,
             minSpeechMs = minSpeechMs,
             endSilenceMs = endSilenceMs,
