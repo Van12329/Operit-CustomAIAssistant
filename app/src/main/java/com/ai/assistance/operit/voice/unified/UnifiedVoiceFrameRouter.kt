@@ -14,7 +14,11 @@ class UnifiedVoiceFrameRouter(
     private val onSpeakingFrame: (FloatArray) -> Unit = {},
     private val speechRecognizer: StreamingSpeechRecognizer? = null,
 ) : AutoCloseable {
+    @Volatile
+    private var enrollmentActive = false
+
     private val subscription = runtime.bus.subscribe { frame ->
+        if (enrollmentActive) return@subscribe
         when (runtime.stateMachine.state) {
             UnifiedVoiceState.HOTWORD_ARMED -> {
                 val result = wakeDetector.process(frame)
@@ -34,6 +38,11 @@ class UnifiedVoiceFrameRouter(
             UnifiedVoiceState.SPEAKING -> onSpeakingFrame(frame)
             UnifiedVoiceState.SUSPENDED_BY_CALL -> Unit
         }
+    }
+
+    fun setEnrollmentActive(active: Boolean) {
+        enrollmentActive = active
+        if (active) speechRecognizer?.cancelSession()
     }
 
     fun startSpeechRecognition(preroll: FloatArray = floatArrayOf()): Boolean {
