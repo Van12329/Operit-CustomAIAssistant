@@ -77,18 +77,54 @@ class UnifiedVoiceFrameRouterTest {
         runtime.close()
     }
 
+    @Test
+    fun sttCanRestartForNextTurnWithoutRestartingCaptureOrWake() {
+        val runtime = UnifiedAudioRuntime(sampleRate = 4, prerollSeconds = 1)
+        val wake = FakeWakeDetector()
+        val stt = FakeStreamingSpeechRecognizer()
+        val router = UnifiedVoiceFrameRouter(
+            runtime = runtime,
+            wakeDetector = wake,
+            onWakeDetected = { runtime.stateMachine.onWakeDetected() },
+            speechRecognizer = stt,
+        )
+
+        wake.detectNext = true
+        runtime.onFrame(floatArrayOf(1f))
+        assertEquals(1, stt.starts)
+
+        runtime.stateMachine.onResponseStarted()
+        router.finishSpeechRecognition()
+        runtime.onFrame(floatArrayOf(2f))
+        assertEquals(0, stt.frames.size)
+
+        runtime.stateMachine.onResponseFinished()
+        router.startSpeechRecognition()
+        runtime.onFrame(floatArrayOf(3f))
+        assertEquals(2, stt.starts)
+        assertEquals(listOf(listOf(3f)), stt.frames.map { it.toList() })
+        assertEquals(1, wake.frames)
+
+        router.close()
+        runtime.close()
+    }
+
     private class FakeStreamingSpeechRecognizer : StreamingSpeechRecognizer {
         var preroll = floatArrayOf()
         val frames = mutableListOf<FloatArray>()
         var closed = 0
+        var starts = 0
+        private var active = false
 
         override fun startSession(preroll: FloatArray): Boolean {
+            starts++
+            active = true
             this.preroll = preroll.copyOf()
             return true
         }
-        override fun acceptPcm(pcm: FloatArray) { frames += pcm.copyOf() }
-        override fun finishSession() = Unit
-        override fun cancelSession() = Unit
+        override fun acceptPcm(pcm: FloatArray) { if (active) frames += pcm.copyOf() }
+        override fun finishSession() { active = false }
+        override fun cancelSession() { active = false }
         override fun close() { closed++ }
     }
 
