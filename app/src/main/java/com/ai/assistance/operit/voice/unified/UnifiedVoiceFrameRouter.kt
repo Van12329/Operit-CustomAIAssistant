@@ -17,6 +17,7 @@ class UnifiedVoiceFrameRouter(
     private val subscription = runtime.bus.subscribe { frame ->
         when (runtime.stateMachine.state) {
             UnifiedVoiceState.HOTWORD_ARMED -> {
+                if (!wakeDetector.isReady()) return@subscribe
                 val result = wakeDetector.process(frame)
                 if (result.detected) {
                     // The preroll subscriber is registered by UnifiedAudioRuntime before this router,
