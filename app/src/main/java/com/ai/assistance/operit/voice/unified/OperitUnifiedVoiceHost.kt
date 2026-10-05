@@ -70,8 +70,8 @@ class OperitUnifiedVoiceHost(
         return true
     }
 
-    fun start(): Boolean {
-        if (!profileLoaded) {
+    fun start(requireWakeProfile: Boolean = true): Boolean {
+        if (requireWakeProfile && !profileLoaded) {
             AppLogger.w(TAG, "UNIFIED_START rejected reason=no_wake_profile")
             return false
         }
