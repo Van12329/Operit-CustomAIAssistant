@@ -587,14 +587,15 @@ fun AssistantConfigScreen() {
 
             if (personalWakeConfigDialogVisible) {
                 val scope = rememberCoroutineScope()
-                var step1 by remember { mutableStateOf<FloatArray?>(null) }
-                var step2 by remember { mutableStateOf<FloatArray?>(null) }
-                var step3 by remember { mutableStateOf<FloatArray?>(null) }
-                var recordingStep by remember { mutableStateOf(0) }
+                val samples = remember { mutableStateListOf<FloatArray?>().apply {
+                    val existing = personalWakeTemplates.map { it.features.toFloatArray() }
+                    if (existing.isNotEmpty()) addAll(existing) else repeat(3) { add(null) }
+                } }
+                var recordingIndex by remember { mutableStateOf<Int?>(null) }
 
                 AlertDialog(
                     onDismissRequest = {
-                        if (recordingStep == 0) personalWakeConfigDialogVisible = false
+                        if (recordingIndex == null) personalWakeConfigDialogVisible = false
                     },
                     title = { Text(text = stringResource(R.string.voice_wakeup_personal_config_dialog_title)) },
                     text = {
@@ -605,86 +606,79 @@ fun AssistantConfigScreen() {
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
 
-                            @Composable
-                            fun stepRow(index: Int, value: FloatArray?, onRecord: () -> Unit) {
+                            samples.forEachIndexed { index, value ->
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Text(
-                                        text = stringResource(R.string.voice_wakeup_personal_config_step, index),
+                                        text = stringResource(R.string.voice_wakeup_personal_config_step, index + 1),
                                         style = MaterialTheme.typography.bodyMedium
                                     )
-
-                                    val busy = recordingStep == index
-                                    val label =
-                                        when {
-                                            busy -> stringResource(R.string.voice_wakeup_personal_config_recording)
-                                            value != null -> stringResource(R.string.voice_wakeup_personal_config_record_done)
-                                            else -> stringResource(R.string.voice_wakeup_personal_config_record)
-                                        }
-                                    FilledTonalButton(
-                                        onClick = onRecord,
-                                        enabled = recordingStep == 0,
-                                    ) {
-                                        Text(text = label)
+                                    val busy = recordingIndex == index
+                                    val label = when {
+                                        busy -> stringResource(R.string.voice_wakeup_personal_config_recording)
+                                        value != null -> stringResource(R.string.voice_wakeup_personal_config_record_done)
+                                        else -> stringResource(R.string.voice_wakeup_personal_config_record)
                                     }
+                                    FilledTonalButton(
+                                        onClick = {
+                                            recordingIndex = index
+                                            scope.launch {
+                                                try {
+                                                    PersonalWakeEnrollment.recordOneTemplate(context)?.let {
+                                                        samples[index] = it
+                                                    }
+                                                } finally {
+                                                    recordingIndex = null
+                                                }
+                                            }
+                                        },
+                                        enabled = recordingIndex == null,
+                                    ) { Text(text = label) }
                                 }
                             }
 
-                            stepRow(1, step1) {
-                                recordingStep = 1
-                                scope.launch {
-                                    val feat = PersonalWakeEnrollment.recordOneTemplate(context)
-                                    if (feat != null) step1 = feat
-                                    recordingStep = 0
-                                }
+                            TextButton(
+                                enabled = recordingIndex == null,
+                                onClick = { samples.add(null) }
+                            ) {
+                                Text(text = "+ " + stringResource(R.string.voice_wakeup_personal_config_record))
                             }
-                            stepRow(2, step2) {
-                                recordingStep = 2
-                                scope.launch {
-                                    val feat = PersonalWakeEnrollment.recordOneTemplate(context)
-                                    if (feat != null) step2 = feat
-                                    recordingStep = 0
-                                }
-                            }
-                            stepRow(3, step3) {
-                                recordingStep = 3
-                                scope.launch {
-                                    val feat = PersonalWakeEnrollment.recordOneTemplate(context)
-                                    if (feat != null) step3 = feat
-                                    recordingStep = 0
+                            if (samples.size > 1) {
+                                TextButton(
+                                    enabled = recordingIndex == null,
+                                    onClick = { samples.removeAt(samples.lastIndex) }
+                                ) {
+                                    Text(text = "−")
                                 }
                             }
                         }
                     },
                     confirmButton = {
-                        val canSave = step1 != null && step2 != null && step3 != null && recordingStep == 0
+                        val completed = samples.filterNotNull()
+                        val canSave = completed.isNotEmpty() && recordingIndex == null
                         TextButton(
                             enabled = canSave,
                             onClick = {
                                 if (!canSave) return@TextButton
                                 coroutineScope.launch {
-                                    val templates =
-                                        listOf(step1!!, step2!!, step3!!).map { f ->
+                                    wakePrefs.savePersonalWakeTemplates(
+                                        completed.map { f ->
                                             WakeWordPreferences.PersonalWakeTemplate(features = f.toList())
                                         }
-                                    wakePrefs.savePersonalWakeTemplates(templates)
+                                    )
                                 }
                                 personalWakeConfigDialogVisible = false
                             }
-                        ) {
-                            Text(text = stringResource(R.string.voice_wakeup_personal_config_save))
-                        }
+                        ) { Text(text = stringResource(R.string.voice_wakeup_personal_config_save)) }
                     },
                     dismissButton = {
                         TextButton(
-                            enabled = recordingStep == 0,
+                            enabled = recordingIndex == null,
                             onClick = { personalWakeConfigDialogVisible = false }
-                        ) {
-                            Text(text = stringResource(R.string.voice_wakeup_personal_config_cancel))
-                        }
+                        ) { Text(text = stringResource(R.string.voice_wakeup_personal_config_cancel)) }
                     }
                 )
             }
