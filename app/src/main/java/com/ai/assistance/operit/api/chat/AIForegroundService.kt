@@ -427,11 +427,22 @@ class AIForegroundService : Service() {
         }
 
         suspend fun collectUnifiedEnrollmentPcm(
+            context: Context,
             maxRecordMs: Long = 6000L,
             minSpeechMs: Long = 250L,
             endSilenceMs: Long = 350L,
         ): ShortArray? {
-            val service = activeInstance ?: return null
+            val appContext = context.applicationContext
+            ensureMicrophoneForeground(appContext, forceStart = true)
+            var waitedMs = 0L
+            while (activeInstance == null && waitedMs < 3000L) {
+                delay(50L)
+                waitedMs += 50L
+            }
+            val service = activeInstance ?: run {
+                AppLogger.e(TAG, "UNIFIED_ENROLL failed reason=service_unavailable")
+                return null
+            }
             return service.collectEnrollmentPcm(maxRecordMs, minSpeechMs, endSilenceMs)
         }
 
@@ -556,47 +567,94 @@ class AIForegroundService : Service() {
         minSpeechMs: Long,
         endSilenceMs: Long,
     ): ShortArray? {
-        val host = unifiedVoiceHost ?: return null
-        val sampleRate = 16_000
-        val frameMs = 32L
-        return suspendCancellableCoroutine { continuation ->
-            val speech = ArrayList<Short>()
-            val gate = com.ai.assistance.operit.voice.unified.OperitSileroSpeechGate(applicationContext)
-            var seenSpeech = false
-            var speechMs = 0L
-            var silenceMs = 0L
-            val startedAt = System.currentTimeMillis()
-            var subscription: AutoCloseable? = null
-            fun finish(value: ShortArray?) {
-                runCatching { subscription?.close() }
-                runCatching { gate.close() }
-                if (continuation.isActive) continuation.resume(value)
+        if (!hasRecordAudioPermission()) {
+            AppLogger.e(TAG, "UNIFIED_ENROLL failed reason=record_audio_permission")
+            return null
+        }
+        if (wakeListeningSuspendedForExternalRecording) {
+            AppLogger.w(TAG, "UNIFIED_ENROLL failed reason=external_recording")
+            return null
+        }
+
+        val host = wakeStateMutex.withLock {
+            var current = unifiedVoiceHost
+            if (current == null) {
+                current = OperitUnifiedVoiceHost(
+                    context = applicationContext,
+                    onWake = {
+                        AppLogger.d(TAG, "UNIFIED_WAKE detected")
+                        triggerWakeLaunch()
+                    },
+                    onSpeechResult = { result ->
+                        UnifiedVoiceUiBridge.publish(result)
+                    },
+                )
+                unifiedVoiceHost = current
             }
-            subscription = host.subscribePcm { frame ->
-                if (!continuation.isActive) return@subscribePcm
-                if (System.currentTimeMillis() - startedAt > maxRecordMs) {
-                    finish(null)
-                    return@subscribePcm
+            if (!unifiedVoiceRunning) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    tryPromoteToMicrophoneForeground()
                 }
-                val isSpeech = gate.isSpeech(frame)
-                if (isSpeech) {
-                    seenSpeech = true
-                    silenceMs = 0L
-                    speechMs += frameMs
-                    frame.forEach { sample ->
-                        speech.add((sample.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
+                unifiedVoiceRunning = current.start(requireWakeProfile = false)
+                wakeListeningMicActiveForRecordingDetection = unifiedVoiceRunning
+            }
+            if (!unifiedVoiceRunning) null else current
+        } ?: run {
+            AppLogger.e(TAG, "UNIFIED_ENROLL failed reason=capture_start")
+            return null
+        }
+
+        AppLogger.d(TAG, "UNIFIED_ENROLL capture_ready")
+        return kotlinx.coroutines.withTimeoutOrNull(maxRecordMs + 1500L) {
+            suspendCancellableCoroutine { continuation ->
+                val speech = ArrayList<Short>()
+                val gate = com.ai.assistance.operit.voice.unified.OperitSileroSpeechGate(applicationContext)
+                var seenSpeech = false
+                var speechMs = 0L
+                var silenceMs = 0L
+                val frameMs = 32L
+                var subscription: AutoCloseable? = null
+                var finished = false
+
+                fun finish(value: ShortArray?, reason: String) {
+                    if (finished) return
+                    finished = true
+                    runCatching { subscription?.close() }
+                    runCatching { gate.close() }
+                    AppLogger.d(TAG, "UNIFIED_ENROLL finish reason=$reason samples=" + (value?.size ?: 0))
+                    if (continuation.isActive) continuation.resume(value)
+                }
+
+                subscription = host.subscribePcm { frame ->
+                    if (!continuation.isActive || finished) return@subscribePcm
+                    val isSpeech = gate.isSpeech(frame)
+                    if (isSpeech) {
+                        seenSpeech = true
+                        silenceMs = 0L
+                        speechMs += frameMs
+                        frame.forEach { sample ->
+                            speech.add((sample.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
+                        }
+                    } else if (seenSpeech) {
+                        silenceMs += frameMs
+                        if (silenceMs >= endSilenceMs) {
+                            finish(
+                                if (speechMs >= minSpeechMs) speech.toShortArray() else null,
+                                if (speechMs >= minSpeechMs) "speech_complete" else "speech_too_short",
+                            )
+                        }
                     }
-                } else if (seenSpeech) {
-                    silenceMs += frameMs
-                    if (silenceMs >= endSilenceMs) {
-                        finish(if (speechMs >= minSpeechMs) speech.toShortArray() else null)
+                }
+                continuation.invokeOnCancellation {
+                    if (!finished) {
+                        finished = true
+                        runCatching { subscription?.close() }
+                        runCatching { gate.close() }
                     }
                 }
             }
-            continuation.invokeOnCancellation {
-                runCatching { subscription?.close() }
-                runCatching { gate.close() }
-            }
+        }.also {
+            if (it == null) AppLogger.w(TAG, "UNIFIED_ENROLL finish reason=timeout_or_no_speech")
         }
     }
 
