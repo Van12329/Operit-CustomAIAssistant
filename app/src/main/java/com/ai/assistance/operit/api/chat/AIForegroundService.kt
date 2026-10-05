@@ -606,6 +606,7 @@ class AIForegroundService : Service() {
         }
 
         AppLogger.d(TAG, "UNIFIED_ENROLL capture_ready")
+        unifiedEnrollmentActive = true
         host.setEnrollmentActive(true)
         return try {
             kotlinx.coroutines.withTimeoutOrNull(maxRecordMs + 1500L) {
@@ -661,6 +662,8 @@ class AIForegroundService : Service() {
             }
         } finally {
             host.setEnrollmentActive(false)
+            unifiedEnrollmentActive = false
+            stopSelfIfIdle(ignoreAppForeground = true)
         }
     }
 
@@ -971,6 +974,9 @@ class AIForegroundService : Service() {
     @Volatile
     private var wakeListeningSuspendedForEnrollment: Boolean = false
 
+    @Volatile
+    private var unifiedEnrollmentActive: Boolean = false
+
     private var audioManager: AudioManager? = null
     private var audioRecordingCallback: AudioManager.AudioRecordingCallback? = null
     private var externalHttpServer: ExternalChatHttpServer? = null
@@ -1105,7 +1111,7 @@ class AIForegroundService : Service() {
     private fun stopSelfIfIdle(ignoreAppForeground: Boolean = false) {
         val alwaysListeningEnabled = wakeListeningEnabled || isAlwaysListeningEnabledNow()
         val externalHttpEnabled = externalHttpStateFlow.value.isRunning || isExternalHttpEnabledNow()
-        if (isAiBusy || alwaysListeningEnabled || backgroundKeepAliveEnabled || externalHttpEnabled) {
+        if (isAiBusy || unifiedEnrollmentActive || alwaysListeningEnabled || backgroundKeepAliveEnabled || externalHttpEnabled) {
             return
         }
         if (!ignoreAppForeground && ActivityLifecycleManager.getCurrentActivity() != null) {
