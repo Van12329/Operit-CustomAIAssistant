@@ -587,6 +587,7 @@ class AIForegroundService : Service() {
             wakeListeningEnabled &&
                 !wakeListeningSuspendedForIme &&
                 !wakeListeningSuspendedForExternalRecording &&
+                !wakeListeningSuspendedForEnrollment &&
                 !wakeListeningSuspendedForFloatingFullscreen
 
         if (shouldListen) {
