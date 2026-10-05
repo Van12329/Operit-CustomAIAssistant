@@ -106,6 +106,9 @@ class OperitUnifiedVoiceHost(
         controller.onSessionEnded()
     }
 
+    fun subscribePcm(consumer: (FloatArray) -> Unit): AutoCloseable =
+        controller.runtime.bus.subscribe { frame -> consumer(frame.copyOf()) }
+
     fun continuity(): CaptureContinuitySnapshot? = controller.continuity()
 
     override fun close() {
