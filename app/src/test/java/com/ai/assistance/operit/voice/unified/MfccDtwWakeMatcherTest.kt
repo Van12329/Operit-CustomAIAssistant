@@ -65,4 +65,24 @@ class MfccDtwWakeMatcherTest {
         assertEquals(0.865f, result.threshold, 0.0001f)
         assertTrue(result.detected)
     }
+    @Test
+    fun supportsDynamicEnrollmentCountsIncludingOneThreeSixAndNine() {
+        val dim = 3
+        val template = floatArrayOf(
+            1f, 0f, 0f,
+            0f, 1f, 0f,
+            0f, 0f, 1f,
+        )
+        for (count in listOf(1, 3, 6, 9)) {
+            val templates = List(count) { template.copyOf() }
+            val result = MfccDtwWakeMatcher(featureDim = dim).match(
+                features = template.copyOf(),
+                templates = templates,
+                threshold = 0.99f,
+            )
+            assertTrue("count=$count", result.detected)
+            assertEquals(count, result.hits)
+        }
+    }
+
 }
