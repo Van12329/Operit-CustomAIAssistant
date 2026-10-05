@@ -6,6 +6,8 @@ import android.media.AudioFormat
 import android.os.Build
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -25,18 +27,15 @@ class AndroidOnDeviceSpeechRecognizer(
     private val diagnostics: (String) -> Unit = {},
 ) : StreamingSpeechRecognizer {
     private val appContext = context.applicationContext
-    private val recognizer = if (
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-        SpeechRecognizer.isOnDeviceRecognitionAvailable(appContext)
-    ) SpeechRecognizer.createOnDeviceSpeechRecognizer(appContext) else null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var recognizer: SpeechRecognizer? = null
     private val writerExecutor = Executors.newSingleThreadExecutor { Thread(it, "CAA-UnifiedSttPipe") }
     private val active = AtomicBoolean(false)
     private var readPipe: ParcelFileDescriptor? = null
     private var writePipe: ParcelFileDescriptor? = null
     private var output: FileOutputStream? = null
 
-    init {
-        recognizer?.setRecognitionListener(object : RecognitionListener {
+    private val recognitionListener = object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) { diagnostics("STT_READY source=injected_pcm") }
             override fun onBeginningOfSpeech() = Unit
             override fun onRmsChanged(rmsdB: Float) = Unit
@@ -64,11 +63,12 @@ class AndroidOnDeviceSpeechRecognizer(
                     }
                 }
             }
-        })
-    }
+        }
 
     override fun startSession(preroll: FloatArray): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || recognizer == null) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            !SpeechRecognizer.isOnDeviceRecognitionAvailable(appContext)
+        ) {
             diagnostics("STT_UNAVAILABLE reason=on_device_or_api")
             return false
         }
@@ -94,7 +94,20 @@ class AndroidOnDeviceSpeechRecognizer(
                     )
                 }
             }
-            recognizer.startListening(intent)
+            mainHandler.post {
+                try {
+                    val current = recognizer ?: SpeechRecognizer.createOnDeviceSpeechRecognizer(appContext).also {
+                        it.setRecognitionListener(recognitionListener)
+                        recognizer = it
+                    }
+                    if (active.get()) current.startListening(intent)
+                } catch (failure: Throwable) {
+                    diagnostics("STT_START_FAIL type=" + failure.javaClass.simpleName)
+                    active.set(false)
+                    closePipe()
+                    onError(SpeechRecognizer.ERROR_CLIENT)
+                }
+            }
             diagnostics("STT_START source=injected_pcm sampleRate=" + sampleRate)
             if (preroll.isNotEmpty()) acceptPcm(preroll)
             true
@@ -133,14 +146,16 @@ class AndroidOnDeviceSpeechRecognizer(
 
     override fun cancelSession() {
         if (!active.getAndSet(false)) return
-        recognizer?.cancel()
+        mainHandler.post { recognizer?.cancel() }
         diagnostics("STT_CANCEL")
         closePipe()
     }
 
     override fun close() {
         cancelSession()
-        recognizer?.destroy()
+        val current = recognizer
+        recognizer = null
+        mainHandler.post { current?.destroy() }
         writerExecutor.shutdownNow()
     }
 
