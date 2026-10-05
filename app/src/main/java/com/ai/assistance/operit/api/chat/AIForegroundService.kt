@@ -605,7 +605,9 @@ class AIForegroundService : Service() {
         }
 
         AppLogger.d(TAG, "UNIFIED_ENROLL capture_ready")
-        return kotlinx.coroutines.withTimeoutOrNull(maxRecordMs + 1500L) {
+        host.setEnrollmentActive(true)
+        return try {
+            kotlinx.coroutines.withTimeoutOrNull(maxRecordMs + 1500L) {
             suspendCancellableCoroutine { continuation ->
                 val speech = ArrayList<Short>()
                 val gate = com.ai.assistance.operit.voice.unified.OperitSileroSpeechGate(applicationContext)
@@ -653,8 +655,11 @@ class AIForegroundService : Service() {
                     }
                 }
             }
-        }.also {
-            if (it == null) AppLogger.w(TAG, "UNIFIED_ENROLL finish reason=timeout_or_no_speech")
+            }.also {
+                if (it == null) AppLogger.w(TAG, "UNIFIED_ENROLL finish reason=timeout_or_no_speech")
+            }
+        } finally {
+            host.setEnrollmentActive(false)
         }
     }
 
