@@ -568,6 +568,16 @@ class AIForegroundService : Service() {
         minSpeechMs: Long,
         endSilenceMs: Long,
     ): ShortArray? {
+        return unifiedEnrollmentMutex.withLock {
+            collectEnrollmentPcmLocked(maxRecordMs, minSpeechMs, endSilenceMs)
+        }
+    }
+
+    private suspend fun collectEnrollmentPcmLocked(
+        maxRecordMs: Long,
+        minSpeechMs: Long,
+        endSilenceMs: Long,
+    ): ShortArray? {
         if (!hasRecordAudioPermission()) {
             AppLogger.e(TAG, "UNIFIED_ENROLL failed reason=record_audio_permission")
             return null
@@ -982,6 +992,8 @@ class AIForegroundService : Service() {
 
     @Volatile
     private var unifiedEnrollmentActive: Boolean = false
+
+    private val unifiedEnrollmentMutex = kotlinx.coroutines.sync.Mutex()
 
     private var audioManager: AudioManager? = null
     private var audioRecordingCallback: AudioManager.AudioRecordingCallback? = null
