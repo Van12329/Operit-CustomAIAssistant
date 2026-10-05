@@ -109,6 +109,37 @@ class UnifiedVoiceFrameRouterTest {
         runtime.close()
     }
 
+    @Test
+    fun enrollmentSuppressesWakeAndSttWithoutStoppingRawRuntime() {
+        val runtime = UnifiedAudioRuntime(sampleRate = 4, prerollSeconds = 1)
+        val wake = FakeWakeDetector()
+        val stt = FakeStreamingSpeechRecognizer()
+        val router = UnifiedVoiceFrameRouter(
+            runtime = runtime,
+            wakeDetector = wake,
+            onWakeDetected = {},
+            speechRecognizer = stt,
+        )
+        var rawFrames = 0
+        val rawSubscription = runtime.bus.subscribe { rawFrames++ }
+
+        router.setEnrollmentActive(true)
+        wake.detectNext = true
+        runtime.onFrame(floatArrayOf(1f))
+        assertEquals(1, rawFrames)
+        assertEquals(0, wake.frames)
+        assertEquals(0, stt.starts)
+
+        router.setEnrollmentActive(false)
+        runtime.onFrame(floatArrayOf(2f))
+        assertEquals(2, rawFrames)
+        assertEquals(1, wake.frames)
+
+        rawSubscription.close()
+        router.close()
+        runtime.close()
+    }
+
     private class FakeStreamingSpeechRecognizer : StreamingSpeechRecognizer {
         var preroll = floatArrayOf()
         val frames = mutableListOf<FloatArray>()
