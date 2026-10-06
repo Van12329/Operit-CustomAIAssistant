@@ -808,30 +808,34 @@ class AIForegroundService : Service() {
                     val myUid = Process.myUid()
                     val myPackageName = packageName
 
+                    val unifiedAudioSessionId =
+                        unifiedVoiceHost?.continuity()?.current?.audioSessionId
+
                     fun isExternalConfig(cfg: AudioRecordingConfiguration): Boolean {
+                        // Audio session identity comes from the one UnifiedMicrophoneCapture owner.
+                        // Android may redact UID/package metadata, so those fields are only fallback signals.
+                        if (unifiedAudioSessionId != null &&
+                            cfg.clientAudioSessionId == unifiedAudioSessionId
+                        ) {
+                            return false
+                        }
+
                         val uid = cfg.tryGetClientUid()
                         if (uid != null && uid > 0) {
                             if (uid == myUid) return false
-                            if (uid < Process.FIRST_APPLICATION_UID) {
-                                return false
-                            }
-
+                            if (uid < Process.FIRST_APPLICATION_UID) return false
                             val pkg = cfg.tryGetClientPackageName()?.takeIf { it.isNotBlank() }
-                            if (pkg != null) {
-                                return pkg != myPackageName
-                            }
-
-                            return true
+                            return pkg?.let { it != myPackageName } ?: true
                         }
 
                         val pkg = cfg.tryGetClientPackageName()?.takeIf { it.isNotBlank() }
-                        if (uid == null || uid <= 0) {
-                            if (isWakeListeningRunning) return false
-                            if (pkg != null) return pkg != myPackageName
-                            return true
-                        }
+                        if (pkg != null) return pkg != myPackageName
 
-                        return false
+                        // With our capture alive, any different active recording session is external.
+                        // This remains observable even when Android hides the owning app identity.
+                        if (unifiedAudioSessionId != null) return true
+
+                        return !isWakeListeningRunning
                     }
 
                     val hasExternal = configs.any(::isExternalConfig)
@@ -880,30 +884,34 @@ class AIForegroundService : Service() {
             val myUid = Process.myUid()
             val myPackageName = packageName
 
+            val unifiedAudioSessionId =
+                unifiedVoiceHost?.continuity()?.current?.audioSessionId
+
             fun isExternalConfig(cfg: AudioRecordingConfiguration): Boolean {
+                // Audio session identity comes from the one UnifiedMicrophoneCapture owner.
+                // Android may redact UID/package metadata, so those fields are only fallback signals.
+                if (unifiedAudioSessionId != null &&
+                    cfg.clientAudioSessionId == unifiedAudioSessionId
+                ) {
+                    return false
+                }
+
                 val uid = cfg.tryGetClientUid()
                 if (uid != null && uid > 0) {
                     if (uid == myUid) return false
-                    if (uid < Process.FIRST_APPLICATION_UID) {
-                        return false
-                    }
-
+                    if (uid < Process.FIRST_APPLICATION_UID) return false
                     val pkg = cfg.tryGetClientPackageName()?.takeIf { it.isNotBlank() }
-                    if (pkg != null) {
-                        return pkg != myPackageName
-                    }
-
-                    return true
+                    return pkg?.let { it != myPackageName } ?: true
                 }
 
                 val pkg = cfg.tryGetClientPackageName()?.takeIf { it.isNotBlank() }
-                if (uid == null || uid <= 0) {
-                    if (isWakeListeningRunning) return false
-                    if (pkg != null) return pkg != myPackageName
-                    return true
-                }
+                if (pkg != null) return pkg != myPackageName
 
-                return false
+                // With our capture alive, any different active recording session is external.
+                // This remains observable even when Android hides the owning app identity.
+                if (unifiedAudioSessionId != null) return true
+
+                return !isWakeListeningRunning
             }
 
             val hasExternal = configs.any(::isExternalConfig)
