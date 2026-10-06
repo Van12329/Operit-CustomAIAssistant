@@ -199,11 +199,42 @@ jobs:
           npm run build:examples:github
           python3 tools/example_packages/sync_example_packages.py --no-hot-reload
 
-      - name: Configure Android SDK
+      - name: Configure Android SDK and persistent clone signing
+        env:
+          CLONE_KEYSTORE_BASE64: ${{ secrets.CLONE_KEYSTORE_BASE64 }}
+          CLONE_STORE_PASSWORD: ${{ secrets.CLONE_STORE_PASSWORD }}
+          CLONE_KEY_ALIAS: ${{ secrets.CLONE_KEY_ALIAS }}
+          CLONE_KEY_PASSWORD: ${{ secrets.CLONE_KEY_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
           echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+          is_clone=false
+          if [[ "$GITHUB_REF" == "refs/heads/feature/s2s-unified-audio-prototype" || "$GITHUB_REF" == "refs/heads/feature/s2s-unified-audio-clone82" ]]; then
+            is_clone=true
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.gradle_task }}" == ":app:assembleClone" ]]; then
+            is_clone=true
+          fi
+
+          if [[ "$is_clone" == "true" ]]; then
+            : "${CLONE_KEYSTORE_BASE64:?CLONE_KEYSTORE_BASE64 GitHub Actions secret is required for clone builds}"
+            : "${CLONE_STORE_PASSWORD:?CLONE_STORE_PASSWORD GitHub Actions secret is required for clone builds}"
+            : "${CLONE_KEY_ALIAS:?CLONE_KEY_ALIAS GitHub Actions secret is required for clone builds}"
+            : "${CLONE_KEY_PASSWORD:?CLONE_KEY_PASSWORD GitHub Actions secret is required for clone builds}"
+
+            mkdir -p "$RUNNER_TEMP/operit-signing"
+            printf '%s' "$CLONE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/operit-signing/clone.p12"
+            chmod 600 "$RUNNER_TEMP/operit-signing/clone.p12"
+            keytool -list -keystore "$RUNNER_TEMP/operit-signing/clone.p12" -storetype PKCS12 -storepass "$CLONE_STORE_PASSWORD" -alias "$CLONE_KEY_ALIAS" >/dev/null
+
+            {
+              echo "CLONE_STORE_FILE=$RUNNER_TEMP/operit-signing/clone.p12"
+              echo "CLONE_STORE_PASSWORD=$CLONE_STORE_PASSWORD"
+              echo "CLONE_KEY_ALIAS=$CLONE_KEY_ALIAS"
+              echo "CLONE_KEY_PASSWORD=$CLONE_KEY_PASSWORD"
+            } >> local.properties
+          fi
 
       - name: Run Gradle build
         env:
@@ -243,6 +274,10 @@ jobs:
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 -v 4 "$apk"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$apk" | tee app/build/outputs/apk/clone/app-clone.signing.txt
           grep -q "Signer #1 certificate SHA-256 digest:" app/build/outputs/apk/clone/app-clone.signing.txt
+
+          actual_cert="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' app/build/outputs/apk/clone/app-clone.signing.txt | head -n 1 | tr '[:upper:]' '[:lower:]')"
+          test -n "$actual_cert"
+          echo "CLONE_SIGNER_SHA256=$actual_cert"
 
           sha256sum "$apk" | tee app/build/outputs/apk/clone/app-clone.apk.sha256
           stat --printf='APK_BYTES=%s\\n' "$apk"
