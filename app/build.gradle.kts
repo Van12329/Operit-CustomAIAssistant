@@ -385,6 +385,24 @@ android {
                 keyPassword = releaseKeyPassword
             }
         }
+
+        val cloneKeystorePath = localProperties.getProperty("CLONE_STORE_FILE")
+        val cloneStorePassword = localProperties.getProperty("CLONE_STORE_PASSWORD")
+        val cloneKeyAlias = localProperties.getProperty("CLONE_KEY_ALIAS")
+        val cloneKeyPassword = localProperties.getProperty("CLONE_KEY_PASSWORD")
+        if (cloneKeystorePath != null &&
+            cloneStorePassword != null &&
+            cloneKeyAlias != null &&
+            cloneKeyPassword != null &&
+            File(cloneKeystorePath).isFile
+        ) {
+            create("clonePersistent") {
+                storeFile = file(cloneKeystorePath)
+                storePassword = cloneStorePassword
+                keyAlias = cloneKeyAlias
+                keyPassword = cloneKeyPassword
+            }
+        }
     }
 
     externalNativeBuild {
@@ -440,9 +458,13 @@ android {
         create("clone") {
             initWith(getByName("debug"))
             applicationIdSuffix = ".clone"
-            if (releaseSigningConfig != null) {
-                signingConfig = releaseSigningConfig
+            val persistentCloneSigningConfig = signingConfigs.findByName("clonePersistent")
+            require(persistentCloneSigningConfig != null) {
+                "Clone builds require a persistent signing identity. Configure CLONE_STORE_FILE, " +
+                    "CLONE_STORE_PASSWORD, CLONE_KEY_ALIAS and CLONE_KEY_PASSWORD. " +
+                    "Falling back to an ephemeral debug key is forbidden because it breaks Android updates."
             }
+            signingConfig = persistentCloneSigningConfig
             matchingFallbacks += listOf("debug")
             resValue("string", "app_name", "Operit Clone")
         }
