@@ -2010,6 +2010,15 @@ class AIForegroundService : Service() {
 
     private suspend fun stopWakeListeningLocked(releaseProvider: Boolean = false) {
         AppLogger.d(TAG, "stopWakeListening")
+        // Unified voice is the microphone owner when enabled. A handoff must close it
+        // synchronously before another recorder (Operit STT, phone, or third-party app)
+        // is allowed to acquire the microphone.
+        if (UNIFIED_VOICE_ENABLED && (unifiedVoiceRunning || unifiedVoiceHost != null)) {
+            AppLogger.d(TAG, "UNIFIED_CAPTURE release for microphone handoff")
+            unifiedVoiceHost?.close()
+            unifiedVoiceHost = null
+            unifiedVoiceRunning = false
+        }
         wakeListeningMicActiveForRecordingDetection = false
         wakeResumeJob?.cancel()
         wakeResumeJob = null
