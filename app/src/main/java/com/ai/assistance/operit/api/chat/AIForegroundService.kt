@@ -658,9 +658,18 @@ class AIForegroundService : Service() {
                     }
                     if (!isSpeech && seenSpeech) {
                         if (silenceMs >= endSilenceMs) {
+                            val trailingSilenceSamples =
+                                ((silenceMs * 16_000L) / 1000L).toInt().coerceAtMost(speech.size)
+                            val utteranceSamples = (speech.size - trailingSilenceSamples).coerceAtLeast(0)
+                            val utterance =
+                                if (speechMs >= minSpeechMs && utteranceSamples > 0) {
+                                    ShortArray(utteranceSamples) { index -> speech[index] }
+                                } else {
+                                    null
+                                }
                             finish(
-                                if (speechMs >= minSpeechMs) speech.toShortArray() else null,
-                                if (speechMs >= minSpeechMs) "speech_complete" else "speech_too_short",
+                                utterance,
+                                if (utterance != null) "speech_complete" else "speech_too_short",
                             )
                         }
                     }
