@@ -23,7 +23,7 @@ class AndroidOnDeviceSpeechRecognizer(
     context: Context,
     private val sampleRate: Int = 16_000,
     private val onResult: (SpeechRecognitionResult) -> Unit,
-    private val onError: (Int) -> Unit = {},
+    private val onRecognitionError: (Int) -> Unit = {},
     private val diagnostics: (String) -> Unit = {},
 ) : StreamingSpeechRecognizer {
     private val appContext = context.applicationContext
@@ -45,7 +45,7 @@ class AndroidOnDeviceSpeechRecognizer(
                 diagnostics("STT_ERROR code=" + error)
                 active.set(false)
                 closePipe()
-                onError(error)
+                onRecognitionError(error)
             }
             override fun onResults(results: Bundle?) = emitResults(results, true)
             override fun onPartialResults(partialResults: Bundle?) = emitResults(partialResults, false)
@@ -105,7 +105,7 @@ class AndroidOnDeviceSpeechRecognizer(
                     diagnostics("STT_START_FAIL type=" + failure.javaClass.simpleName)
                     active.set(false)
                     closePipe()
-                    onError(SpeechRecognizer.ERROR_CLIENT)
+                    onRecognitionError(SpeechRecognizer.ERROR_CLIENT)
                 }
             }
             diagnostics("STT_START source=injected_pcm sampleRate=" + sampleRate)
