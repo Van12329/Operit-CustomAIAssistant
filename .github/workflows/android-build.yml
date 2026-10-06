@@ -233,6 +233,7 @@ jobs:
               echo "CLONE_STORE_PASSWORD=$CLONE_STORE_PASSWORD"
               echo "CLONE_KEY_ALIAS=$CLONE_KEY_ALIAS"
               echo "CLONE_KEY_PASSWORD=$CLONE_KEY_PASSWORD"
+              echo "CLONE_VERSION_CODE=$GITHUB_RUN_NUMBER"
             } >> local.properties
           fi
 
