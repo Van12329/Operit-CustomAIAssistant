@@ -490,9 +490,14 @@ android {
             }
         }
         if (buildType.name == "clone") {
+            val configuredCloneVersionCode = localProperties.getProperty("CLONE_VERSION_CODE")?.toIntOrNull()
+            require(configuredCloneVersionCode != null && configuredCloneVersionCode > 0) {
+                "Clone builds require a positive CLONE_VERSION_CODE. CI must provide a monotonically increasing value."
+            }
             outputs.all {
                 val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
                 output.outputFileName = "app-clone.apk"
+                output.versionCodeOverride = configuredCloneVersionCode
             }
         }
     }
