@@ -15,6 +15,7 @@ import com.ai.assistance.operit.ui.floating.voice.SpeechInteractionManager
 import com.ai.assistance.operit.util.AppLogger
 import com.ai.assistance.operit.util.TtsSegmenter
 import com.ai.assistance.operit.util.stream.Stream
+import com.ai.assistance.operit.voice.unified.UnifiedVoiceUiBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
@@ -71,6 +72,7 @@ class FloatingFullscreenModeViewModel(
     private val wakePrefs by lazy { WakeWordPreferences(context.applicationContext) }
     private var inactivityTimeoutSeconds: Int = WakeWordPreferences.DEFAULT_VOICE_CALL_INACTIVITY_TIMEOUT_SECONDS
     private var prefsJob: Job? = null
+    private var unifiedSttJob: Job? = null
     private var inactivityJob: Job? = null
     private var lastVoiceActivityAtMs: Long = 0L
 
@@ -109,7 +111,7 @@ class FloatingFullscreenModeViewModel(
     )
     
     // 代理属性，方便 UI 访问
-    val isRecording: Boolean get() = speechManager.isRecording
+    val isRecording: Boolean get() = if (UnifiedVoiceUiBridge.enabled) isWaveActive && !isVoiceCapturePausedForAi else speechManager.isRecording
     val isProcessingSpeech: Boolean get() = speechManager.isProcessingSpeech
     val userMessage: String get() = speechManager.userMessage
     val hasFocus: Boolean get() = speechManager.hasFocus
@@ -145,6 +147,7 @@ class FloatingFullscreenModeViewModel(
         if (!isWaveActive) return
         shouldResumeVoiceCaptureAfterAiTurn = true
         isVoiceCapturePausedForAi = true
+        if (UnifiedVoiceUiBridge.enabled) UnifiedVoiceUiBridge.responseStarted()
         resumeVoiceCaptureJob?.cancel()
         if (speechManager.isRecording || speechManager.isProcessingSpeech) {
             stopVoiceCapture(true)
@@ -165,6 +168,7 @@ class FloatingFullscreenModeViewModel(
                 if (observedAiBusy && !busy) {
                     shouldResumeVoiceCaptureAfterAiTurn = false
                     isVoiceCapturePausedForAi = false
+                    if (UnifiedVoiceUiBridge.enabled) UnifiedVoiceUiBridge.responseFinished()
                     // AI 这一轮结束后，总是从此刻重新开始计算空闲超时。
                     lastVoiceActivityAtMs = System.currentTimeMillis()
                     if (!speechManager.isRecording && !speechManager.isProcessingSpeech) {
@@ -309,6 +313,11 @@ class FloatingFullscreenModeViewModel(
     // ===== 语音交互 =====
 
     fun startVoiceCapture() {
+        if (UnifiedVoiceUiBridge.enabled) {
+            UnifiedVoiceUiBridge.sessionStarted()
+            AppLogger.d(TAG, "Unified voice owns capture; UI startVoiceCapture requests unified session")
+            return
+        }
         // 如果AI正在生成，尝试取消
         val lastMessage = floatContext.messages.lastOrNull()
         val isAiWorking = lastMessage?.sender == "think" || 
@@ -324,6 +333,11 @@ class FloatingFullscreenModeViewModel(
     }
 
     fun stopVoiceCapture(isCancel: Boolean) {
+        if (UnifiedVoiceUiBridge.enabled) {
+            if (isCancel) UnifiedVoiceUiBridge.sessionEnded()
+            AppLogger.d(TAG, "Unified voice owns capture; UI stopVoiceCapture does not stop microphone")
+            return
+        }
         speechManager.stopListening(isCancel)
     }
 
@@ -342,14 +356,17 @@ class FloatingFullscreenModeViewModel(
             playWakeGreetingIfNeeded(wakeLaunched)
 
             startVoiceCapture()
-            if (speechManager.isRecording && waveModeAutoTimeoutEnabled) {
+            if (UnifiedVoiceUiBridge.enabled) {
+                if (waveModeAutoTimeoutEnabled) {
+                    lastVoiceActivityAtMs = System.currentTimeMillis()
+                    startInactivityMonitor()
+                }
+            } else if (speechManager.isRecording && waveModeAutoTimeoutEnabled) {
                 lastVoiceActivityAtMs = System.currentTimeMillis()
                 startInactivityMonitor()
-            } else {
-                if (!speechManager.isRecording) {
-                    isWaveActive = false
-                    showBottomControls = true
-                }
+            } else if (!speechManager.isRecording) {
+                isWaveActive = false
+                showBottomControls = true
             }
         }
     }
@@ -397,6 +414,7 @@ class FloatingFullscreenModeViewModel(
             }
             coroutineScope.launch {
                 speechManager.voiceService.stop()
+                if (UnifiedVoiceUiBridge.enabled) UnifiedVoiceUiBridge.bargeIn()
                 if (!speechManager.isRecording && !speechManager.isProcessingSpeech) {
                     startVoiceCapture()
                 }
@@ -419,13 +437,30 @@ class FloatingFullscreenModeViewModel(
             lastVoiceActivityAtMs = System.currentTimeMillis()
         }
         // 委托给 Manager 处理，波浪模式下启用自动静默发送
-        speechManager.handleRecognitionResult(resultText, isFinal, autoSendSilence = isWaveActive)
+        speechManager.handleRecognitionResult(
+            resultText,
+            isFinal,
+            autoSendSilence = isWaveActive,
+            externallyRecording = UnifiedVoiceUiBridge.enabled && isWaveActive && !isVoiceCapturePausedForAi,
+        )
     }
 
     // ===== 初始化与清理 =====
 
      suspend fun initialize(autoEnterVoiceChat: Boolean = false, wakeLaunched: Boolean = false) {
-         speechManager.initialize()
+         if (UnifiedVoiceUiBridge.enabled) {
+             speechManager.initializeOutputOnly()
+         } else {
+             speechManager.initialize()
+         }
+         unifiedSttJob?.cancel()
+         if (UnifiedVoiceUiBridge.enabled) {
+             unifiedSttJob = coroutineScope.launch {
+                 UnifiedVoiceUiBridge.results.collect { result ->
+                     handleRecognitionResult(result.text, result.isFinal)
+                 }
+             }
+         }
          cancelPendingVoiceCaptureResume()
          prefsJob?.cancel()
          prefsJob = coroutineScope.launch {
@@ -457,7 +492,7 @@ class FloatingFullscreenModeViewModel(
      fun cleanup() {
         val view = floatContext.chatService?.getComposeView()
         speechManager.releaseFocus(view)
-        speechManager.cleanup()
+        if (UnifiedVoiceUiBridge.enabled) speechManager.cleanupOutputOnly() else speechManager.cleanup()
         ttsSpeakJob?.cancel()
         ttsSpeakJob = null
         cancelPendingVoiceCaptureResume()

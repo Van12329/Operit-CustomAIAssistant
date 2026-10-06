@@ -48,8 +48,11 @@ import com.ai.assistance.operit.services.FloatingChatService
 import com.ai.assistance.operit.services.UIDebuggerService
 import com.ai.assistance.operit.data.preferences.DisplayPreferencesManager
 import com.ai.assistance.operit.data.preferences.WakeWordPreferences
+import com.ai.assistance.operit.data.preferences.OperitWakeProfileRepository
 import com.ai.assistance.operit.data.repository.WorkflowRepository
 import com.ai.assistance.operit.ui.main.MainActivity
+import com.ai.assistance.operit.voice.unified.OperitUnifiedVoiceHost
+import com.ai.assistance.operit.voice.unified.UnifiedVoiceUiBridge
 import com.ai.assistance.operit.util.WaifuMessageProcessor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -57,6 +60,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -102,6 +107,8 @@ class AIForegroundService : Service() {
 
     companion object {
         private const val TAG = "AIForegroundService"
+        // Clone validation path. Original Operit installation is not modified.
+        private const val UNIFIED_VOICE_ENABLED = true
         private const val NOTIFICATION_ID = 1
         private const val REPLY_NOTIFICATION_ID = 2001
         private const val CHANNEL_ID = "AI_SERVICE_CHANNEL"
@@ -126,6 +133,10 @@ class AIForegroundService : Service() {
             "com.ai.assistance.operit.action.SET_WAKE_LISTENING_SUSPENDED_FOR_FLOATING_FULLSCREEN"
         private const val EXTRA_FLOATING_FULLSCREEN_ACTIVE = "extra_floating_fullscreen_active"
 
+        private const val ACTION_SET_WAKE_LISTENING_SUSPENDED_FOR_ENROLLMENT =
+            "com.ai.assistance.operit.action.SET_WAKE_LISTENING_SUSPENDED_FOR_ENROLLMENT"
+        private const val EXTRA_ENROLLMENT_ACTIVE = "extra_enrollment_active"
+
         const val ACTION_PREPARE_WAKE_HANDOFF =
             "com.ai.assistance.operit.action.PREPARE_WAKE_HANDOFF"
 
@@ -141,6 +152,7 @@ class AIForegroundService : Service() {
 
         // 静态标志，用于从外部检查服务是否正在运行
         val isRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+        @Volatile private var activeInstance: AIForegroundService? = null
         private val activeReplyNotificationTags = ConcurrentHashMap.newKeySet<String>()
         private val externalHttpStateFlow = MutableStateFlow(ExternalChatHttpState())
         val externalHttpState = externalHttpStateFlow.asStateFlow()
@@ -415,6 +427,26 @@ class AIForegroundService : Service() {
             }
         }
 
+        suspend fun collectUnifiedEnrollmentPcm(
+            context: Context,
+            maxRecordMs: Long = 6000L,
+            minSpeechMs: Long = 250L,
+            endSilenceMs: Long = 350L,
+        ): ShortArray? {
+            val appContext = context.applicationContext
+            ensureMicrophoneForeground(appContext, forceStart = true)
+            var waitedMs = 0L
+            while (activeInstance == null && waitedMs < 3000L) {
+                delay(50L)
+                waitedMs += 50L
+            }
+            val service = activeInstance ?: run {
+                AppLogger.e(TAG, "UNIFIED_ENROLL failed reason=service_unavailable")
+                return null
+            }
+            return service.collectEnrollmentPcm(maxRecordMs, minSpeechMs, endSilenceMs)
+        }
+
         fun ensureMicrophoneForeground(context: Context, forceStart: Boolean = false) {
             val appContext = context.applicationContext
             if (!forceStart && !isRunning.get() && !hasPersistentForegroundResponsibilityConfigured(appContext)) {
@@ -531,6 +563,142 @@ class AIForegroundService : Service() {
         applyWakeListeningState()
     }
 
+    private suspend fun collectEnrollmentPcm(
+        maxRecordMs: Long,
+        minSpeechMs: Long,
+        endSilenceMs: Long,
+    ): ShortArray? {
+        return unifiedEnrollmentMutex.withLock {
+            collectEnrollmentPcmLocked(maxRecordMs, minSpeechMs, endSilenceMs)
+        }
+    }
+
+    private suspend fun collectEnrollmentPcmLocked(
+        maxRecordMs: Long,
+        minSpeechMs: Long,
+        endSilenceMs: Long,
+    ): ShortArray? {
+        if (!hasRecordAudioPermission()) {
+            AppLogger.e(TAG, "UNIFIED_ENROLL failed reason=record_audio_permission")
+            return null
+        }
+        if (wakeListeningSuspendedForExternalRecording) {
+            AppLogger.w(TAG, "UNIFIED_ENROLL failed reason=external_recording")
+            return null
+        }
+
+        val host = wakeStateMutex.withLock {
+            var current = unifiedVoiceHost
+            if (current == null) {
+                current = OperitUnifiedVoiceHost(
+                    context = applicationContext,
+                    onWake = {
+                        AppLogger.d(TAG, "UNIFIED_WAKE detected")
+                        triggerWakeLaunch()
+                    },
+                    onSpeechResult = { result ->
+                        UnifiedVoiceUiBridge.publish(result)
+                    },
+                )
+                unifiedVoiceHost = current
+            }
+            if (!unifiedVoiceRunning) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    tryPromoteToMicrophoneForeground()
+                }
+                unifiedVoiceRunning = current.start(requireWakeProfile = false)
+                wakeListeningMicActiveForRecordingDetection = unifiedVoiceRunning
+            }
+            if (!unifiedVoiceRunning) null else current
+        } ?: run {
+            AppLogger.e(TAG, "UNIFIED_ENROLL failed reason=capture_start")
+            return null
+        }
+
+        AppLogger.d(TAG, "UNIFIED_ENROLL capture_ready")
+        unifiedEnrollmentActive = true
+        host.setEnrollmentActive(true)
+        return try {
+            kotlinx.coroutines.withTimeoutOrNull(maxRecordMs + 1500L) {
+            suspendCancellableCoroutine { continuation ->
+                val speech = ArrayList<Short>()
+                val gate = com.ai.assistance.operit.voice.unified.OperitSileroSpeechGate(applicationContext)
+                var seenSpeech = false
+                var speechMs = 0L
+                var silenceMs = 0L
+                var utteranceStarted = false
+                val frameMs = 32L
+                var subscription: AutoCloseable? = null
+                var finished = false
+
+                fun finish(value: ShortArray?, reason: String) {
+                    if (finished) return
+                    finished = true
+                    runCatching { subscription?.close() }
+                    runCatching { gate.close() }
+                    AppLogger.d(TAG, "UNIFIED_ENROLL finish reason=$reason samples=" + (value?.size ?: 0))
+                    if (continuation.isActive) continuation.resume(value)
+                }
+
+                subscription = host.subscribePcm { frame ->
+                    if (!continuation.isActive || finished) return@subscribePcm
+                    val isSpeech = gate.isSpeech(frame)
+                    if (isSpeech) {
+                        seenSpeech = true
+                        utteranceStarted = true
+                        silenceMs = 0L
+                        speechMs += frameMs
+                    } else if (seenSpeech) {
+                        silenceMs += frameMs
+                    }
+                    if (utteranceStarted) {
+                        frame.forEach { sample ->
+                            speech.add((sample.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
+                        }
+                    }
+                    if (!isSpeech && seenSpeech) {
+                        if (silenceMs >= endSilenceMs) {
+                            val trailingSilenceSamples =
+                                ((silenceMs * 16_000L) / 1000L).toInt().coerceAtMost(speech.size)
+                            val utteranceSamples = (speech.size - trailingSilenceSamples).coerceAtLeast(0)
+                            val utterance =
+                                if (speechMs >= minSpeechMs && utteranceSamples > 0) {
+                                    ShortArray(utteranceSamples) { index -> speech[index] }
+                                } else {
+                                    null
+                                }
+                            finish(
+                                utterance,
+                                if (utterance != null) "speech_complete" else "speech_too_short",
+                            )
+                        }
+                    }
+                }
+                continuation.invokeOnCancellation {
+                    if (!finished) {
+                        finished = true
+                        runCatching { subscription?.close() }
+                        runCatching { gate.close() }
+                    }
+                }
+            }
+            }.also {
+                if (it == null) AppLogger.w(TAG, "UNIFIED_ENROLL finish reason=timeout_or_no_speech")
+            }
+        } finally {
+            host.setEnrollmentActive(false)
+            unifiedEnrollmentActive = false
+            stopSelfIfIdle(ignoreAppForeground = true)
+        }
+    }
+
+    private fun updateWakeListeningSuspendedForEnrollment(active: Boolean) {
+        if (wakeListeningSuspendedForEnrollment == active) return
+        wakeListeningSuspendedForEnrollment = active
+        AppLogger.d(TAG, "Wake listening suspended by enrollment: $wakeListeningSuspendedForEnrollment")
+        applyWakeListeningState()
+    }
+
     private fun updateWakeListeningSuspendedForFloatingFullscreen(active: Boolean) {
         if (wakeListeningSuspendedForFloatingFullscreen == active) return
         wakeListeningSuspendedForFloatingFullscreen = active
@@ -549,10 +717,17 @@ class AIForegroundService : Service() {
     }
 
     private suspend fun applyWakeListeningStateLocked() {
+        if (UNIFIED_VOICE_ENABLED) {
+            applyUnifiedVoiceStateLocked()
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(NOTIFICATION_ID, createNotification())
+            return
+        }
         val shouldListen =
             wakeListeningEnabled &&
                 !wakeListeningSuspendedForIme &&
                 !wakeListeningSuspendedForExternalRecording &&
+                !wakeListeningSuspendedForEnrollment &&
                 !wakeListeningSuspendedForFloatingFullscreen
 
         if (shouldListen) {
@@ -564,6 +739,55 @@ class AIForegroundService : Service() {
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(NOTIFICATION_ID, createNotification())
+    }
+
+    private suspend fun applyUnifiedVoiceStateLocked() {
+        val shouldRun =
+            wakeListeningEnabled &&
+                !wakeListeningSuspendedForIme &&
+                !wakeListeningSuspendedForExternalRecording &&
+                !wakeListeningSuspendedForEnrollment
+
+        if (!shouldRun) {
+            if (unifiedVoiceRunning || unifiedVoiceHost != null) {
+                AppLogger.d(TAG, "UNIFIED_CAPTURE stop suspendedExternal=" + wakeListeningSuspendedForExternalRecording)
+                unifiedVoiceHost?.close()
+                unifiedVoiceHost = null
+                unifiedVoiceRunning = false
+                wakeListeningMicActiveForRecordingDetection = false
+            }
+            return
+        }
+
+        val host = unifiedVoiceHost ?: OperitUnifiedVoiceHost(
+            context = applicationContext,
+            onWake = {
+                AppLogger.d(TAG, "UNIFIED_WAKE detected")
+                triggerWakeLaunch()
+            },
+            onSpeechResult = { result ->
+                UnifiedVoiceUiBridge.publish(result)
+                AppLogger.d(
+                    TAG,
+                    "UNIFIED_STT " + (if (result.isFinal) "final" else "partial") +
+                        " language=" + result.languageTag + " text='" + result.text + "'"
+                )
+            },
+        ).also { unifiedVoiceHost = it }
+
+        val profileReady = host.loadPersonalTemplates(personalWakeTemplates)
+        if (!profileReady) {
+            AppLogger.w(TAG, "UNIFIED_CAPTURE not started: personal wake enrollment required")
+            return
+        }
+        if (!unifiedVoiceRunning) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                tryPromoteToMicrophoneForeground()
+            }
+            unifiedVoiceRunning = host.start()
+            wakeListeningMicActiveForRecordingDetection = unifiedVoiceRunning
+            AppLogger.d(TAG, "UNIFIED_CAPTURE running=" + unifiedVoiceRunning)
+        }
     }
 
     private fun startRecordingStateMonitoring() {
@@ -723,6 +947,9 @@ class AIForegroundService : Service() {
     private val wakePrefs by lazy { WakeWordPreferences(applicationContext) }
     @Volatile
     private var wakeSpeechProvider: SpeechService? = null
+    private var unifiedVoiceHost: OperitUnifiedVoiceHost? = null
+    private var unifiedVoiceCommandJob: Job? = null
+    @Volatile private var unifiedVoiceRunning: Boolean = false
     private val workflowRepository by lazy { WorkflowRepository(applicationContext) }
     private val externalHttpPreferences by lazy { ExternalHttpApiPreferences.getInstance(applicationContext) }
 
@@ -768,6 +995,14 @@ class AIForegroundService : Service() {
 
     @Volatile
     private var wakeListeningSuspendedForFloatingFullscreen: Boolean = false
+
+    @Volatile
+    private var wakeListeningSuspendedForEnrollment: Boolean = false
+
+    @Volatile
+    private var unifiedEnrollmentActive: Boolean = false
+
+    private val unifiedEnrollmentMutex = kotlinx.coroutines.sync.Mutex()
 
     private var audioManager: AudioManager? = null
     private var audioRecordingCallback: AudioManager.AudioRecordingCallback? = null
@@ -903,7 +1138,7 @@ class AIForegroundService : Service() {
     private fun stopSelfIfIdle(ignoreAppForeground: Boolean = false) {
         val alwaysListeningEnabled = wakeListeningEnabled || isAlwaysListeningEnabledNow()
         val externalHttpEnabled = externalHttpStateFlow.value.isRunning || isExternalHttpEnabledNow()
-        if (isAiBusy || alwaysListeningEnabled || backgroundKeepAliveEnabled || externalHttpEnabled) {
+        if (isAiBusy || unifiedEnrollmentActive || alwaysListeningEnabled || backgroundKeepAliveEnabled || externalHttpEnabled) {
             return
         }
         if (!ignoreAppForeground && ActivityLifecycleManager.getCurrentActivity() != null) {
@@ -943,8 +1178,29 @@ class AIForegroundService : Service() {
         observeBackgroundKeepAlivePreference()
         observeChatRuntimeStats()
         startWakeMonitoring()
+        startUnifiedVoiceCommandBridge()
         startExternalHttpMonitoring()
         AppLogger.d(TAG, "AI 前台服务已启动。")
+    }
+
+    private fun startUnifiedVoiceCommandBridge() {
+        if (!UNIFIED_VOICE_ENABLED || unifiedVoiceCommandJob?.isActive == true) return
+        unifiedVoiceCommandJob = serviceScope.launch {
+            UnifiedVoiceUiBridge.commands.collect { command ->
+                val host = unifiedVoiceHost ?: return@collect
+                runCatching {
+                    when (command) {
+                        UnifiedVoiceUiBridge.Command.SessionStarted -> host.onSessionStarted()
+                        UnifiedVoiceUiBridge.Command.ResponseStarted -> host.onResponseStarted()
+                        UnifiedVoiceUiBridge.Command.ResponseFinished -> host.onResponseFinished()
+                        UnifiedVoiceUiBridge.Command.BargeIn -> host.onBargeIn()
+                        UnifiedVoiceUiBridge.Command.SessionEnded -> host.onSessionEnded()
+                    }
+                }.onFailure { error ->
+                    AppLogger.e(TAG, "UNIFIED_COMMAND failed command=$command", error)
+                }
+            }
+        }
     }
 
     private fun observeRuntimeTaskViewPreference() {
@@ -1080,6 +1336,7 @@ class AIForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        activeInstance = this
         if (intent?.action == ACTION_EXIT_APP) {
             isRunning.set(false)
             updateAiBusyState(false)
@@ -1190,6 +1447,12 @@ class AIForegroundService : Service() {
             return START_NOT_STICKY
         }
 
+        if (intent?.action == ACTION_SET_WAKE_LISTENING_SUSPENDED_FOR_ENROLLMENT) {
+            val active = intent.getBooleanExtra(EXTRA_ENROLLMENT_ACTIVE, false)
+            updateWakeListeningSuspendedForEnrollment(active)
+            return START_NOT_STICKY
+        }
+
         if (intent?.action == ACTION_SET_WAKE_LISTENING_SUSPENDED_FOR_FLOATING_FULLSCREEN) {
             val active = intent.getBooleanExtra(EXTRA_FLOATING_FULLSCREEN_ACTIVE, false)
             updateWakeListeningSuspendedForFloatingFullscreen(active)
@@ -1274,6 +1537,7 @@ class AIForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        if (activeInstance === this) activeInstance = null
         val stoppedPort = externalHttpCurrentPort ?: externalHttpStateFlow.value.port
         runCatching {
             externalHttpServer?.stopServer()
@@ -1294,7 +1558,12 @@ class AIForegroundService : Service() {
         isRunning.set(false)
         updateAiBusyState(false)
         hideKeepAliveOverlay()
+        unifiedVoiceCommandJob?.cancel()
+        unifiedVoiceCommandJob = null
         stopWakeMonitoring()
+        unifiedVoiceHost?.close()
+        unifiedVoiceHost = null
+        unifiedVoiceRunning = false
         AppLogger.d(TAG, "AI 前台服务已销毁。")
     }
 
@@ -1384,11 +1653,8 @@ class AIForegroundService : Service() {
                 }
 
                 launch {
-                    wakePrefs.personalWakeTemplatesFlow.collectLatest { templates ->
-                        personalWakeTemplates = templates.mapNotNull { t ->
-                            val feats = t.features
-                            if (feats.isEmpty()) null else feats.toFloatArray()
-                        }
+                    OperitWakeProfileRepository(wakePrefs).templates.collectLatest { templates ->
+                        personalWakeTemplates = templates
                         AppLogger.d(TAG, "个人化唤醒模板更新: count=${personalWakeTemplates.size}")
                         applyWakeListeningState()
                     }
@@ -1744,6 +2010,15 @@ class AIForegroundService : Service() {
 
     private suspend fun stopWakeListeningLocked(releaseProvider: Boolean = false) {
         AppLogger.d(TAG, "stopWakeListening")
+        // Unified voice is the microphone owner when enabled. A handoff must close it
+        // synchronously before another recorder (Operit STT, phone, or third-party app)
+        // is allowed to acquire the microphone.
+        if (UNIFIED_VOICE_ENABLED && (unifiedVoiceRunning || unifiedVoiceHost != null)) {
+            AppLogger.d(TAG, "UNIFIED_CAPTURE release for microphone handoff")
+            unifiedVoiceHost?.close()
+            unifiedVoiceHost = null
+            unifiedVoiceRunning = false
+        }
         wakeListeningMicActiveForRecordingDetection = false
         wakeResumeJob?.cancel()
         wakeResumeJob = null
@@ -1809,6 +2084,18 @@ class AIForegroundService : Service() {
 
     private fun triggerWakeLaunch() {
         AppLogger.d(TAG, "triggerWakeLaunch: 打开全屏悬浮窗并进入语音")
+        // Unified voice owns the sole AudioRecord. The legacy handoff path waits for
+        // ACTION_PREPARE_WAKE_HANDOFF, but unified wake did not arm that handshake.
+        // Arm it before launching the voice UI so SpeechInteractionManager can request
+        // a deterministic release instead of racing a second recorder against wake capture.
+        val now = System.currentTimeMillis()
+        pendingWakeTriggeredAtMs = now
+        wakeHandoffPending = true
+        wakeStopInProgress = false
+        SpeechPrerollStore.setPendingWakePhrase(
+            phrase = currentWakePhrase,
+            regexEnabled = wakePhraseRegexEnabled,
+        )
         try {
             val floatingIntent = Intent(this, FloatingChatService::class.java).apply {
                 putExtra("INITIAL_MODE", com.ai.assistance.operit.ui.floating.FloatingMode.FULLSCREEN.name)

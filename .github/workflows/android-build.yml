@@ -19,7 +19,7 @@ on:
           - ':app:assembleClone'
           - ':app:bundleRelease'
   push:
-    branches: [main, customai/dev]
+    branches: [main, customai/dev, feature/s2s-unified-audio-prototype]
     paths:
       - .github/workflows/android-build.yml
       - .gitmodules
@@ -213,12 +213,64 @@ jobs:
         run: |
           set -euo pipefail
           case "$EVENT_NAME" in
-            push) gradle_task=assembleDebug ;;
+            push)
+              if [[ "$GITHUB_REF" == "refs/heads/feature/s2s-unified-audio-prototype" ]]; then
+                gradle_task=:app:assembleClone
+              else
+                gradle_task=assembleDebug
+              fi
+              ;;
             workflow_dispatch) gradle_task="$DISPATCH_GRADLE_TASK" ;;
             *) echo "Unsupported workflow event: $EVENT_NAME" >&2; exit 2 ;;
           esac
           chmod +x ./gradlew
           ./gradlew "$gradle_task" --stacktrace --no-daemon
+
+      - name: Verify clone APK installability
+        if: github.ref == 'refs/heads/feature/s2s-unified-audio-prototype'
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/clone/app-clone.apk"
+          test -s "$apk"
+
+          badging="$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | head -n 1)"
+          echo "$badging"
+          grep -q "package: name='com.ai.assistance.operit.clone'" <<<"$badging"
+
+          # A package name alone does not prove that Android can install the artifact.
+          # Fail CI on malformed ZIP/APK structure or invalid/missing APK signatures.
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 -v 4 "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$apk"
+
+          sha256sum "$apk" | tee app/build/outputs/apk/clone/app-clone.apk.sha256
+          stat --printf='APK_BYTES=%s\\n' "$apk"
+
+      - name: Verify clone APK with Android package manager
+        if: github.ref == 'refs/heads/feature/s2s-unified-audio-prototype'
+        uses: reactivecircus/android-emulator-runner@1dcd0090116d15e7c562f8db72807de5e036a4ed # v2
+        with:
+          api-level: 34
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            apk="app/build/outputs/apk/clone/app-clone.apk"
+            adb install -r "$apk"
+            adb shell pm path com.ai.assistance.operit.clone
+            adb uninstall com.ai.assistance.operit.clone
+
+      - name: Run unified voice unit tests
+        if: github.ref == 'refs/heads/feature/s2s-unified-audio-prototype'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Gradle compiles the entire unit-test source set before --tests filtering.
+          # The base branch currently contains unrelated LLM-provider test compile failures,
+          # so isolate the disposable CI checkout to the unified voice package only.
+          find app/src/test/java -type f ! -path '*/voice/unified/*' -delete
+          ./gradlew :app:testDebugUnitTest --tests 'com.ai.assistance.operit.voice.unified.*' --stacktrace --no-daemon
 
       - name: Upload Android reports
         if: always()
@@ -238,6 +290,7 @@ jobs:
           name: operit-android-${{ github.run_number }}
           path: |
             app/build/outputs/apk/**/*.apk
+            app/build/outputs/apk/**/*.sha256
             app/build/outputs/bundle/**/*.aab
           if-no-files-found: error
           retention-days: 14

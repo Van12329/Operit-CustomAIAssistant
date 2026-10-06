@@ -75,6 +75,22 @@ class SpeechInteractionManager(
         }
     }
 
+    suspend fun initializeOutputOnly() {
+        resetState()
+        try {
+            voiceService.initialize()
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "Failed to initialize voice output service", e)
+        }
+    }
+
+    fun cleanupOutputOnly() {
+        timeoutJob?.cancel()
+        silenceTimeoutJob?.cancel()
+        coroutineScope.launch { voiceService.stop() }
+        resetState()
+    }
+
     fun cleanup() {
         stopListening(isCancel = true)
         coroutineScope.launch {
@@ -211,9 +227,14 @@ class SpeechInteractionManager(
     }
 
     // 处理识别结果
-    fun handleRecognitionResult(resultText: String, isFinal: Boolean, autoSendSilence: Boolean = false) {
+    fun handleRecognitionResult(
+        resultText: String,
+        isFinal: Boolean,
+        autoSendSilence: Boolean = false,
+        externallyRecording: Boolean = false,
+    ) {
         val effectiveText = stripWakePhrasePrefixIfNeeded(resultText)
-        if (isRecording) {
+        if (isRecording || externallyRecording) {
             if (effectiveText.isNotBlank()) {
                 // 处理增量
                 if (latestPartialText.isNotEmpty() && !effectiveText.startsWith(latestPartialText)) {
