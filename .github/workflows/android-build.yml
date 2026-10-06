@@ -214,7 +214,7 @@ jobs:
           set -euo pipefail
           case "$EVENT_NAME" in
             push)
-              if [[ "$GITHUB_REF" == "refs/heads/feature/s2s-unified-audio-prototype" ]]; then
+              if [[ "$GITHUB_REF" == "refs/heads/feature/s2s-unified-audio-prototype" || "$GITHUB_REF" == "refs/heads/feature/s2s-unified-audio-clone82" ]]; then
                 gradle_task=:app:assembleClone
               else
                 gradle_task=assembleDebug
@@ -227,7 +227,7 @@ jobs:
           ./gradlew "$gradle_task" --stacktrace --no-daemon
 
       - name: Verify clone APK installability
-        if: github.ref == 'refs/heads/feature/s2s-unified-audio-prototype'
+        if: github.ref == 'refs/heads/feature/s2s-unified-audio-prototype' || github.ref == 'refs/heads/feature/s2s-unified-audio-clone82'
         shell: bash
         run: |
           set -euo pipefail
@@ -247,7 +247,7 @@ jobs:
           stat --printf='APK_BYTES=%s\\n' "$apk"
 
       - name: Verify clone APK with Android package manager
-        if: github.ref == 'refs/heads/feature/s2s-unified-audio-prototype'
+        if: github.ref == 'refs/heads/feature/s2s-unified-audio-prototype' || github.ref == 'refs/heads/feature/s2s-unified-audio-clone82'
         uses: reactivecircus/android-emulator-runner@1dcd0090116d15e7c562f8db72807de5e036a4ed # v2
         with:
           api-level: 34
@@ -262,7 +262,7 @@ jobs:
             adb uninstall com.ai.assistance.operit.clone
 
       - name: Run unified voice unit tests
-        if: github.ref == 'refs/heads/feature/s2s-unified-audio-prototype'
+        if: github.ref == 'refs/heads/feature/s2s-unified-audio-prototype' || github.ref == 'refs/heads/feature/s2s-unified-audio-clone82'
         shell: bash
         run: |
           set -euo pipefail
