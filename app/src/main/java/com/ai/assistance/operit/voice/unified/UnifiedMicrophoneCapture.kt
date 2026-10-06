@@ -118,7 +118,7 @@ class UnifiedMicrophoneCapture(
                 for (i in 0 until frameSize) floats[i] = shorts[i] / 32768.0f
                 filled = 0
                 try {
-                    onFrame(floats)
+                    onFrame(floats.copyOf())
                 } catch (error: Throwable) {
                     Log.e(TAG, "frame consumer failed", error)
                 }
