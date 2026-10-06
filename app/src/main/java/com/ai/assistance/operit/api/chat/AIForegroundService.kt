@@ -2075,6 +2075,18 @@ class AIForegroundService : Service() {
 
     private fun triggerWakeLaunch() {
         AppLogger.d(TAG, "triggerWakeLaunch: 打开全屏悬浮窗并进入语音")
+        // Unified voice owns the sole AudioRecord. The legacy handoff path waits for
+        // ACTION_PREPARE_WAKE_HANDOFF, but unified wake did not arm that handshake.
+        // Arm it before launching the voice UI so SpeechInteractionManager can request
+        // a deterministic release instead of racing a second recorder against wake capture.
+        val now = System.currentTimeMillis()
+        pendingWakeTriggeredAtMs = now
+        wakeHandoffPending = true
+        wakeStopInProgress = false
+        SpeechPrerollStore.setPendingWakePhrase(
+            phrase = currentWakePhrase,
+            regexEnabled = wakePhraseRegexEnabled,
+        )
         try {
             val floatingIntent = Intent(this, FloatingChatService::class.java).apply {
                 putExtra("INITIAL_MODE", com.ai.assistance.operit.ui.floating.FloatingMode.FULLSCREEN.name)
